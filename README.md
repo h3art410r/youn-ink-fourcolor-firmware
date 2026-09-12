@@ -142,14 +142,7 @@ ZECTRIX_EPD_PANEL_1BPP            黑白 1bpp 屏
 
 ## UI 说明
 
-固件 UI 目前走 RawDraw 组件体系，重点页面包括：
-
-- 对话：显示用户语音、识别状态、AI 回复。
-- 待办：本地展示、服务端同步、完成/删除/编辑。
-- 设置：音量、亮度、主题、网络、同步、OTA 等。
-- 相册：缩略图列表、大图展示、AP 传图入口。
-- 天气/天气详情、新闻、黄历、年度进度、日历、电子书、日志。
-- 快速切换 Overlay：用于页面间快速跳转。
+固件包含多个 RawDraw 页面渲染器，但已有页面代码不代表相应业务数据源都已接通。NOTE4C 两应用原型先开放相册和天气：启动进入相册，上/下键在相册与天气间切换，BOOT 在相册切换下一张图片、在天气切换上海/杭州。天气使用免 Key 的 [Open-Meteo Forecast API](https://open-meteo.com/en/docs)；免费接口限非商业用途，天气数据按 [CC BY 4.0](https://open-meteo.com/en/license) 标注来源。更多页面待两应用链路验证后再接入。
 
 四色屏主题层通过语义样式绘制组件，不建议在业务页面里继续新增裸 `RED/YELLOW/BLACK/WHITE`。新增 UI 时优先使用 RawDraw 组件和 theme token。
 

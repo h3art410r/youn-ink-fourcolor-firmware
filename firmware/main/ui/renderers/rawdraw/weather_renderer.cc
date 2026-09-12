@@ -164,12 +164,17 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
 
     if (!has_data_) {
         const char* empty_text = "暂无天气数据";
-        const char* hint = "长按刷新";
+        const char* hint = "联网后自动获取";
         int text_w = MeasureTextWidth(empty_text, font_);
         int hint_w = MeasureTextWidth(hint, font_);
         int center_y = content_top + (height - content_top) / 2;
-        const int empty_baseline = CalcBaselineY(font_, center_y - 10, Style::kVisualTextOffset);
-        const int hint_baseline = CalcBaselineY(font_, center_y + 16, Style::kVisualTextOffset);
+        const std::string location = city_name_.empty() ? "天气" : city_name_;
+        const int location_w = MeasureTextWidth(location.c_str(), title_font_);
+        const int location_baseline = CalcBaselineY(title_font_, center_y - 34, Style::kVisualTextOffset);
+        const int empty_baseline = CalcBaselineY(font_, center_y, Style::kVisualTextOffset);
+        const int hint_baseline = CalcBaselineY(font_, center_y + 25, Style::kVisualTextOffset);
+        DrawText(fb, width, (width - location_w) / 2,
+                 TopYFromBaseline(title_font_, location_baseline), location.c_str(), title_font_, text);
         DrawText(fb, width, (width - text_w) / 2, TopYFromBaseline(font_, empty_baseline), empty_text, font_, text);
         DrawText(fb, width, (width - hint_w) / 2, TopYFromBaseline(font_, hint_baseline), hint, font_, secondary);
     } else {
@@ -218,12 +223,13 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
                  InkCenteredTextTopY(font_, "空气质量", aqi_box.y + 17, 0),
                  "空气质量", font_, secondary);
         char aqi_buf[40];
-        snprintf(aqi_buf, sizeof(aqi_buf), "%d", current_data_.air_aqi >= 0 ? static_cast<int>(current_data_.air_aqi) : 0);
+        snprintf(aqi_buf, sizeof(aqi_buf), "%s", current_data_.air_aqi >= 0
+                     ? std::to_string(current_data_.air_aqi).c_str() : "--");
         const int aqi_w = MeasureTextWidth(aqi_buf, title_font_);
         DrawText(fb, width, aqi_box.x + (aqi_box.w - aqi_w) / 2,
                  InkCenteredTextTopY(title_font_, aqi_buf, aqi_box.y + 42, 0),
                  aqi_buf, title_font_, text);
-        std::string air = current_data_.air_quality.empty() ? "优" : current_data_.air_quality;
+        std::string air = current_data_.air_quality.empty() ? "--" : current_data_.air_quality;
         const int air_w = MeasureTextWidth(air.c_str(), font_);
         DrawText(fb, width, aqi_box.x + (aqi_box.w - air_w) / 2,
                  InkCenteredTextTopY(font_, air.c_str(), aqi_box.y + 58, 0),
@@ -294,6 +300,12 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
         }
     }
 
+    const std::string attribution = "数据：" +
+        (current_data_.source.empty() ? std::string("Open-Meteo.com · CC BY 4.0") : current_data_.source);
+    const int attribution_width = MeasureTextWidth(attribution.c_str(), font_);
+    DrawText(fb, width, std::max(4, width - attribution_width - 8),
+             height - font_->line_height - 2, attribution.c_str(), font_, secondary);
+
     needs_full_refresh_ = false;
 }
 
@@ -336,7 +348,11 @@ void WeatherRenderer::Update(const WeatherData& data) {
 }
 
 void WeatherRenderer::SetCityName(const char* name) {
-    city_name_ = name ? name : "";
+    const std::string next_name = name ? name : "";
+    if (city_name_ != next_name) {
+        city_name_ = next_name;
+        has_data_ = false;
+    }
     needs_full_refresh_ = true;
 }
 

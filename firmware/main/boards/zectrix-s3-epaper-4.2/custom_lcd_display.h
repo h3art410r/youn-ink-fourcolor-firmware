@@ -76,6 +76,7 @@ public:
 
     // Refresh state for sleep gating
     bool IsRefreshPending();
+    bool IsFourColorPanel() const { return panel_type_ == EPD_PANEL_4COLOR_SSD2683; }
 
     // Notify when refresh transitions from busy to idle.
     void SetOnRefreshIdle(std::function<void()> cb);
@@ -128,7 +129,6 @@ private:
     void EPD_TurnOnDisplay();
     void EPD_TurnOnDisplayPart();
     void EPD_SetFullWindowAndCounter(); // ***关键：恢复全屏窗口+计数器***
-    bool IsFourColorPanel() const { return panel_type_ == EPD_PANEL_4COLOR_SSD2683; }
     void EPD_DisplayFourColorTestPattern();
 
     // Helper functions for partial display

@@ -15,6 +15,7 @@
 #include "esp_video.h"
 #include "esp_video_cam.h"
 #include "esp_video_device_internal.h"
+#include "esp_idf_version.h"
 #if CONFIG_ESP_VIDEO_ENABLE_SWAP_BYTE
 #include "esp_video_swap_byte.h"
 #endif
@@ -67,7 +68,11 @@ static esp_err_t dvp_get_input_frame_type(esp_cam_sensor_output_format_t sensor_
         *bpp = 16;
         break;
     case ESP_CAM_SENSOR_PIXFORMAT_YUV422:
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
         *in_color = CAM_CTLR_COLOR_YUV422_YUYV;  // ESP-IDF v6.0 requires specific YUV422 format
+#else
+        *in_color = CAM_CTLR_COLOR_YUV422;
+#endif
         *v4l2_format = V4L2_PIX_FMT_YUV422P;
         *bpp = 16;
         break;

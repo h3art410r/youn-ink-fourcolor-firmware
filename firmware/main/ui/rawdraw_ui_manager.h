@@ -202,6 +202,7 @@ public:
                             const std::string& url);
     bool StartLanHttpServer(const std::string& ip_address);
     void StopLanHttpServer();
+    void StartWeatherService();
 
     /**
      * @brief Render everything to the framebuffer
@@ -471,6 +472,7 @@ private:
     std::atomic<bool> input_refresh_locked_{false};
     int last_clock_minute_key_ = -1;
     int gallery_slideshow_interval_minutes_ = 0;
+    int weather_city_index_ = 0;
 
     // Voice wakeup overlay state
     rawdraw::VoiceWakeupState voice_wakeup_state_;
@@ -502,7 +504,7 @@ private:
     void RestoreQuickSwitchBacking(uint8_t* fb);
     void RedrawQuickSwitchOnly(uint8_t* fb);
     void RefreshRect(const rawdraw::Rect& rect, bool urgent = false);
-    static const std::array<QuickSwitchItem, 2>& GetQuickSwitchItems();
+    static const std::array<QuickSwitchItem, 12>& GetQuickSwitchItems();
     void MarkAllRenderersFullRefresh();
 };
 

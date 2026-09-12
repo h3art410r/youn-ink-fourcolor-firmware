@@ -6,6 +6,7 @@
 #include "ap_transfer_server.h"
 #include "boards/zectrix-s3-epaper-4.2/config.h"
 #include "common/photo_storage.h"
+#include "common/weather_api.h"
 #include "settings.h"
 #include "wifi_manager.h"
 
@@ -58,6 +59,7 @@ const char kUploadHtml[] = R"HTML(
 <section class="note" id="helpPanel" style="display:none"><b>功能说明</b><ul><li>支持 1 BP 黑白和 2 BP 四色图片上传，保存后可在设备相册查看。</li><li>轮播关闭后，大图会固定停在当前图片；开启后，设备在相册大图模式按周期自动切换。</li><li>局域网服务开启时，页面顶部会显示设备本地 IP，可用手机或 NAS/本地 server 管理图片。</li><li>关闭服务只停止本地传图网页；关闭并省电会停止服务和 WiFi，进入 deep sleep，按 BOOT 唤醒。</li><li>极致省电建议：选好大图，关闭轮播，再执行关闭并省电，墨水屏会保留最后画面。</li></ul></section>
 <section class="panel split"><div><div class="title">发送图片</div><p class="muted">先选择图片，预览转换效果，再发送到设备。</p><div class="row"><label class="radio"><input name="fmt" type="radio" value="1bpp" checked>1 BP 黑白</label><label class="radio"><input name="fmt" type="radio" value="bwry2bpp">2 BP 四色</label></div><div class="row" style="margin-top:8px"><button class="btn yellow" id="pick">选择图片</button><button class="btn" id="send" disabled>发送</button></div><input class="file" id="file" type="file" accept="image/*"><div class="status" id="status">等待选择</div></div><div><canvas class="preview" id="preview" width="400" height="300"></canvas></div></section>
 <section class="panel" id="settingsPanel" style="display:none"><div class="bar"><b>相册轮播周期</b><span class="muted" id="settingsState"></span></div><div class="row"><label class="radio"><input name="slide" type="radio" value="0">关闭</label><label class="radio"><input name="slide" type="radio" value="5">5min</label><label class="radio"><input name="slide" type="radio" value="10">10min</label><label class="radio"><input name="slide" type="radio" value="30">30min</label><button class="btn yellow" id="saveSettings">保存设置</button><button class="btn secondary" id="stopService">关闭服务</button><button class="btn danger" id="sleepNow">关闭并省电</button></div></section>
+<section class="panel" id="weatherSettings"><div class="bar"><b>天气数据源</b><span class="muted" id="weatherState">读取配置...</span></div><div class="row"><label>当前来源 <select id="weatherProvider" style="padding:7px;border:1px solid #111"><option value="open-meteo">Open-Meteo（免 token）</option><option value="qweather">和风天气</option></select></label><label>和风 API Host <input id="qweatherHost" placeholder="你的专属 Host，例如 abc.qweatherapi.com" style="width:220px;padding:7px;border:1px solid #111"></label><label>和风 API Key <input id="qweatherCredential" type="password" autocomplete="new-password" placeholder="留空则保留已保存 API Key" style="width:220px;padding:7px;border:1px solid #111"></label><button class="btn yellow" id="saveWeather">保存并切换</button></div><div class="muted" style="margin-top:6px">和风 API Key 保存在设备本地；页面不会回显。Open‑Meteo 无需凭证。本页为局域网 HTTP，请只在可信网络使用。</div></section>
 <section class="panel"><div class="bar"><div><b>设备图片</b> <span class="muted" id="count"></span></div><div class="row"><button class="btn secondary" id="reload">刷新</button><button class="btn danger" id="batch" disabled>删除选中</button></div></div><div id="photos" class="grid"><div class="empty">读取中...</div></div></section>
 </main>
 <div class="modal" id="modal"><div class="dialog"><button class="close" id="close">×</button><canvas class="big" id="big" width="400" height="300"></canvas><div class="meta"><input id="mTitle" style="width:100%;padding:7px;border:1px solid #111;font-weight:800"><div class="row" style="margin-top:6px"><input id="mDate" placeholder="日期" style="flex:1;padding:7px;border:1px solid #111"><input id="mLocation" placeholder="地点" style="flex:1;padding:7px;border:1px solid #111"></div><textarea id="mBody" rows="3" style="width:100%;margin-top:6px;padding:7px;border:1px solid #111"></textarea><div class="muted" id="mMeta" style="margin-top:5px"></div><div class="row" style="margin-top:8px"><button class="btn yellow" id="mSave">保存信息</button><button class="btn secondary" id="mUp">上移</button><button class="btn secondary" id="mDown">下移</button><button class="btn danger" id="mDelete">删除这张</button></div></div></div></div>
@@ -87,10 +89,13 @@ document.getElementById('mSave').onclick=async()=>{if(!active)return;const body=
 document.getElementById('settingsBtn').onclick=()=>{settingsPanel.style.display=settingsPanel.style.display==='none'?'block':'none';loadSettings()};
 document.getElementById('helpBtn').onclick=()=>{const p=document.getElementById('helpPanel');p.style.display=p.style.display==='none'?'block':'none'};
 async function loadSettings(){try{const j=await (await fetch('/settings')).json();document.querySelectorAll('input[name=slide]').forEach(r=>r.checked=Number(r.value)===j.slideshow_interval);const slide=j.slideshow_interval?`轮播 ${j.slideshow_interval}min`:'轮播关闭';const svc=j.service_running?`服务开启 ${j.url||''}`:'服务将关闭';settingsState.textContent=`${slide} · ${svc}`}catch(e){settingsState.textContent='读取失败'}}
+const weatherState=document.getElementById('weatherState');
+async function loadWeatherSettings(){try{const j=await (await fetch('/settings')).json();document.getElementById('weatherProvider').value=j.weather_provider||'open-meteo';document.getElementById('qweatherHost').value=j.qweather_host||'';weatherState.textContent=`和风 API Key ${j.qweather_credential_configured?'已保存':'未配置'}`}catch(e){weatherState.textContent='读取失败'}}
+document.getElementById('saveWeather').onclick=async()=>{const body={weather_provider:document.getElementById('weatherProvider').value,qweather_host:document.getElementById('qweatherHost').value.trim(),qweather_auth:'api_key',qweather_credential:document.getElementById('qweatherCredential').value};const j=await (await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();document.getElementById('qweatherCredential').value='';weatherState.textContent=j.success?`已切换；和风 API Key ${j.qweather_credential_configured?'已保存':'未配置'}`:(j.error==='qweather_config_required'?'请检查和风天气的 Host 和 API Key':(j.error||'保存失败'));}
 document.getElementById('saveSettings').onclick=async()=>{const v=Number(document.querySelector('input[name=slide]:checked')?.value||0);const j=await (await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slideshow_interval:v})})).json();settingsState.textContent=j.success?(v?`已保存 ${v}min`:'已关闭'):'保存失败'};
 document.getElementById('stopService').onclick=async()=>{if(!confirm('关闭本地传图服务？'))return;await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({service_enabled:false})});settingsState.textContent='服务正在关闭'};
 document.getElementById('sleepNow').onclick=async()=>{if(!confirm('关闭服务、WiFi 并进入省电模式？'))return;await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({service_enabled:false,wifi_enabled:false,sleep:true})});settingsState.textContent='设备正在进入省电模式'};
-batchBtn.onclick=async()=>{const ids=[...selected];if(!ids.length)return;if(!confirm(`确认删除 ${ids.length} 张图片？`))return;for(const id of ids)await delOne(id);loadPhotos()};document.getElementById('reload').onclick=loadPhotos;loadStatus();loadSettings();loadPhotos();
+batchBtn.onclick=async()=>{const ids=[...selected];if(!ids.length)return;if(!confirm(`确认删除 ${ids.length} 张图片？`))return;for(const id of ids)await delOne(id);loadPhotos()};document.getElementById('reload').onclick=loadPhotos;loadStatus();loadSettings();loadWeatherSettings();loadPhotos();
 </script></body></html>
 )HTML";
 
@@ -683,6 +688,20 @@ esp_err_t ApTransferServer::SettingsHandler(httpd_req_t* req) {
             SendJson(req, "{\"success\":false,\"error\":\"bad_json\"}");
             return ESP_FAIL;
         }
+        cJSON* provider_item = cJSON_GetObjectItemCaseSensitive(root, "weather_provider");
+        if (cJSON_IsString(provider_item) && provider_item->valuestring) {
+            char host[128] = {};
+            char auth[16] = {};
+            char credential[384] = {};
+            CopyJsonString(root, "qweather_host", host, sizeof(host));
+            CopyJsonString(root, "qweather_auth", auth, sizeof(auth));
+            CopyJsonString(root, "qweather_credential", credential, sizeof(credential));
+            if (!weather_api_set_provider(provider_item->valuestring, host, auth, credential)) {
+                cJSON_Delete(root);
+                SendJson(req, "{\"success\":false,\"error\":\"qweather_config_required\"}");
+                return ESP_OK;
+            }
+        }
         cJSON* item = cJSON_GetObjectItemCaseSensitive(root, "slideshow_interval");
         if (cJSON_IsNumber(item)) {
             interval = item->valueint;
@@ -718,19 +737,33 @@ esp_err_t ApTransferServer::SettingsHandler(httpd_req_t* req) {
         mode = self->mode_ == TransferMode::kLan ? "lan" : "ap";
         ip = self->ap_ip_.empty() ? kApIp : self->ap_ip_.c_str();
     }
-    char response[256];
-    snprintf(response, sizeof(response),
-             "{\"success\":true,\"slideshow_interval\":%d,\"service_running\":%s,"
-             "\"mode\":\"%s\",\"ip\":\"%s\",\"url\":\"http://%s/\","
-             "\"closing\":%s,\"sleep\":%s}",
-             interval,
-             self && self->IsRunning() ? "true" : "false",
-             mode,
-             ip,
-             ip,
-             close_service ? "true" : "false",
-             enter_sleep ? "true" : "false");
-    SendJson(req, response);
+    char weather_provider[16] = {};
+    char qweather_host[128] = {};
+    char qweather_auth[16] = {};
+    bool credential_configured = false;
+    weather_api_get_provider(weather_provider, sizeof(weather_provider),
+                             qweather_host, sizeof(qweather_host),
+                             qweather_auth, sizeof(qweather_auth),
+                             &credential_configured);
+    cJSON* response = cJSON_CreateObject();
+    cJSON_AddBoolToObject(response, "success", true);
+    cJSON_AddNumberToObject(response, "slideshow_interval", interval);
+    cJSON_AddBoolToObject(response, "service_running", self && self->IsRunning());
+    cJSON_AddStringToObject(response, "mode", mode);
+    cJSON_AddStringToObject(response, "ip", ip);
+    char url[48];
+    snprintf(url, sizeof(url), "http://%s/", ip);
+    cJSON_AddStringToObject(response, "url", url);
+    cJSON_AddBoolToObject(response, "closing", close_service);
+    cJSON_AddBoolToObject(response, "sleep", enter_sleep);
+    cJSON_AddStringToObject(response, "weather_provider", weather_provider);
+    cJSON_AddStringToObject(response, "qweather_host", qweather_host);
+    cJSON_AddStringToObject(response, "qweather_auth", qweather_auth);
+    cJSON_AddBoolToObject(response, "qweather_credential_configured", credential_configured);
+    char* response_text = cJSON_PrintUnformatted(response);
+    if (response_text) SendJson(req, response_text);
+    cJSON_free(response_text);
+    cJSON_Delete(response);
     if (close_service || stop_wifi || enter_sleep) {
         ESP_LOGI(kTag, "Web control requested: close_service=%d stop_wifi=%d sleep=%d",
                  close_service ? 1 : 0,

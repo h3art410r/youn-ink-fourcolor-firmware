@@ -38,6 +38,17 @@ namespace ui {
 
 namespace {
 
+struct WeatherCity {
+    const char* name;
+    double latitude;
+    double longitude;
+};
+
+constexpr WeatherCity kWeatherCities[] = {
+    {"上海", 31.2304, 121.4737},
+    {"杭州", 30.2741, 120.1551},
+};
+
 std::string FitTextToWidth(const std::string& text, const lv_font_t* font, int max_width) {
     if (!font || max_width <= 0 || text.empty()) return "";
     if (rawdraw::MeasureTextWidth(text.c_str(), font) <= max_width) return text;
@@ -477,6 +488,14 @@ void RawDrawUiManager::SwitchPage(RawDrawPageId page) {
 
     // Initialize the new page renderer
     InitRenderer(page);
+    if (page == RawDrawPageId::Weather && weather_renderer_) {
+        const WeatherCity& city = kWeatherCities[weather_city_index_];
+        weather_renderer_->SetCityName(city.name);
+        const WeatherData* data = weather_api_get_last_data();
+        if (weather_api_is_ready() && data && data->city == city.name) {
+            weather_renderer_->Update(*data);
+        }
+    }
 
     // Switch current page
     current_page_ = page;
@@ -517,6 +536,11 @@ void RawDrawUiManager::InitRenderer(RawDrawPageId page) {
     if (renderer) {
         renderer->Init(width_, height_);
         renderer->MarkFullRefresh();
+        if (page == RawDrawPageId::Gallery && photo_gallery_renderer_) {
+            photo_gallery_renderer_->EnterFullscreenMode();
+        } else if (page == RawDrawPageId::Weather && weather_renderer_) {
+            weather_renderer_->SetCityName(kWeatherCities[weather_city_index_].name);
+        }
     }
 }
 
@@ -644,9 +668,19 @@ bool RawDrawUiManager::TryDisplayCurrentPhotoRaw4Color() {
     return shown;
 }
 
-const std::array<RawDrawUiManager::QuickSwitchItem, 2>& RawDrawUiManager::GetQuickSwitchItems() {
-    static const std::array<QuickSwitchItem, 2> kItems = {{
+const std::array<RawDrawUiManager::QuickSwitchItem, 12>& RawDrawUiManager::GetQuickSwitchItems() {
+    static const std::array<QuickSwitchItem, 12> kItems = {{
         {RawDrawPageId::Gallery, "相册", FA_SETTINGS_IMAGE},
+        {RawDrawPageId::Weather, "天气", FA_SETTINGS_WIFI},
+        {RawDrawPageId::News, "每日热点", FA_SETTINGS_NEWSPAPER},
+        {RawDrawPageId::Calendar, "日历", FA_SETTINGS_CALENDAR},
+        {RawDrawPageId::Ebook, "电子书", FA_SETTINGS_BOOK},
+        {RawDrawPageId::Almanac, "黄历", FA_SETTINGS_CALENDAR},
+        {RawDrawPageId::YearProgress, "年度进度", FA_SETTINGS_CLOCK},
+        {RawDrawPageId::LifeBar, "人生进度", FA_SETTINGS_INFO},
+        {RawDrawPageId::Chat, "语音对话", FA_SETTINGS_COMMENT},
+        {RawDrawPageId::Wifi, "WiFi 状态", FA_SETTINGS_WIFI},
+        {RawDrawPageId::Log, "运行日志", FA_SETTINGS_INFO},
         {RawDrawPageId::Settings, "设置", FA_SETTINGS_GEAR},
 #if 0
         // Hardware-only alignment pages are intentionally hidden from the
@@ -703,13 +737,38 @@ void RawDrawUiManager::StopLanHttpServer() {
     }
 }
 
+void RawDrawUiManager::StartWeatherService() {
+    if (weather_api_is_ready()) {
+        weather_api_fetch_now();
+        return;
+    }
+    const WeatherCity& city = kWeatherCities[weather_city_index_];
+    weather_api_init(city.name, city.latitude, city.longitude,
+                     [this](const WeatherData& data) {
+                         if (!weather_renderer_ ||
+                             data.city != kWeatherCities[weather_city_index_].name) {
+                             return;
+                         }
+                         weather_renderer_->Update(data);
+                         if (current_page_ == RawDrawPageId::Weather) {
+                             RequestActivePageRefresh();
+                         }
+                     });
+}
+
 // ============================================================
 // Input handling
 // ============================================================
 
 bool RawDrawUiManager::HandleInput(const rawdraw::ButtonEvent& event) {
     const bool navigation_click = IsNavigationClick(event);
-    if (navigation_click && input_refresh_locked_.load(std::memory_order_acquire)) {
+    // Four-color SSD2683 updates are full-screen and can take many seconds.
+    // Keep accepting navigation while its current transfer is in flight; the
+    // display driver snapshots the active frame and coalesces later dirties
+    // into the next refresh, so rapid input is not discarded or sent mid-frame.
+    const bool queue_navigation_during_refresh = lcd_ && lcd_->IsFourColorPanel();
+    if (navigation_click && input_refresh_locked_.load(std::memory_order_acquire) &&
+        !queue_navigation_during_refresh) {
         ESP_LOGI(kTag, "Navigation click ignored until current refresh completes: type=%d", event.type);
         return true;
     }
@@ -730,92 +789,34 @@ bool RawDrawUiManager::HandleInput(const rawdraw::ButtonEvent& event) {
             return true;
         }
     }
-    
-    if (event.type == rawdraw::ButtonEvent::kBootDoubleClick) {
-#if 0
-        // Disabled during hardware screenshot verification. BOOT double-click
-        // is globally reserved for debug screenshot capture.
-        if (current_page_ == RawDrawPageId::Weather) {
-            SwitchPage(RawDrawPageId::WeatherDetail);
-            return true;
-        }
-        if (current_page_ == RawDrawPageId::WeatherDetail) {
-            SwitchPage(RawDrawPageId::Weather);
-            return true;
-        }
-#endif
-#if 0
-        // Disabled for now: BOOT double-click must remain global screenshot on
-        // gallery so real hardware captures can report the memory-card layout.
-        if (current_page_ == RawDrawPageId::Gallery) {
-            if (photo_detail_renderer_ && photo_gallery_renderer_) {
-                photo_detail_renderer_->SetSelection(photo_gallery_renderer_->GetSelectedIndex());
-            }
-            SwitchPage(RawDrawPageId::PhotoDetail);
-            return true;
-        }
-        if (current_page_ == RawDrawPageId::PhotoDetail) {
-            SwitchPage(RawDrawPageId::Gallery);
-            return true;
-        }
-#endif
+
+    if ((current_page_ == RawDrawPageId::Gallery || current_page_ == RawDrawPageId::Weather) &&
+        (event.type == rawdraw::ButtonEvent::kUpClick ||
+         event.type == rawdraw::ButtonEvent::kDownClick)) {
+        SwitchPage(current_page_ == RawDrawPageId::Gallery
+                       ? RawDrawPageId::Weather
+                       : RawDrawPageId::Gallery);
+        return true;
     }
 
-    if (event.type == rawdraw::ButtonEvent::kUpDoubleClick) {
-        quick_switch_open_ = !quick_switch_open_;
-        auto* fb = lcd_ ? lcd_->GetFramebuffer() : nullptr;
-        auto* mutex = lcd_ ? lcd_->GetMutex() : nullptr;
-        if (fb && mutex) xSemaphoreTake(mutex, portMAX_DELAY);
-        if (quick_switch_open_) {
-            SnapshotQuickSwitchBacking(fb);
-            const auto& items = GetQuickSwitchItems();
-            quick_switch_index_ = 0;
-            quick_switch_first_visible_ = 0;
-            for (size_t i = 0; i < items.size(); ++i) {
-                if (items[i].page == current_page_) {
-                    quick_switch_index_ = static_cast<int>(i);
-                    break;
-                }
-            }
-            // Clamp first_visible so selected is in view
-            const int kVisibleCount = 5;
-            const int total = static_cast<int>(items.size());
-            if (quick_switch_index_ >= kVisibleCount) {
-                quick_switch_first_visible_ = quick_switch_index_ - kVisibleCount + 1;
-            }
-            if (quick_switch_first_visible_ + kVisibleCount > total) {
-                quick_switch_first_visible_ = std::max(0, total - kVisibleCount);
-            }
-            RedrawQuickSwitchOnly(fb);
-        } else {
-            RestoreQuickSwitchBacking(fb);
-        }
-        if (fb) {
-            if (mutex) xSemaphoreGive(mutex);
-            RefreshRect(GetQuickSwitchBounds(), false);
-        } else if (mutex) {
-            xSemaphoreGive(mutex);
+    if (event.type == rawdraw::ButtonEvent::kBootClick &&
+        current_page_ == RawDrawPageId::Gallery && photo_gallery_renderer_) {
+        if (photo_gallery_renderer_->SelectNext(true)) {
+            RefreshActivePage(false);
         }
         return true;
     }
 
-    if (quick_switch_open_ && HandleQuickSwitchInput(event)) {
-        auto* fb = lcd_ ? lcd_->GetFramebuffer() : nullptr;
-        auto* mutex = lcd_ ? lcd_->GetMutex() : nullptr;
-        if (fb && mutex) xSemaphoreTake(mutex, portMAX_DELAY);
-        const bool had_quick_switch_backing = !quick_switch_backing_.empty();
-        if (fb) {
-            if (quick_switch_open_) {
-                RedrawQuickSwitchOnly(fb);
-            } else if (had_quick_switch_backing) {
-                RestoreQuickSwitchBacking(fb);
-            }
-            if (mutex) xSemaphoreGive(mutex);
-            if (quick_switch_open_ || had_quick_switch_backing) {
-                RefreshRect(GetQuickSwitchBounds(), false);
-            }
-        } else if (mutex) {
-            xSemaphoreGive(mutex);
+    if (event.type == rawdraw::ButtonEvent::kBootClick &&
+        current_page_ == RawDrawPageId::Weather && weather_renderer_) {
+        weather_city_index_ = (weather_city_index_ + 1) %
+            static_cast<int>(sizeof(kWeatherCities) / sizeof(kWeatherCities[0]));
+        const WeatherCity& city = kWeatherCities[weather_city_index_];
+        weather_renderer_->SetCityName(city.name);
+        if (weather_api_is_ready()) {
+            weather_api_set_location(city.name, city.latitude, city.longitude);
+        } else {
+            RefreshActivePage(false);
         }
         return true;
     }
@@ -1150,7 +1151,7 @@ void RawDrawUiManager::DrawQuickSwitchOverlay(uint8_t* fb, int width, int height
                                  Style::kBorderRadiusMD, shadow_style);
     rawdraw::DrawStyledRoundRect(fb, width, height, {overlay_x, overlay_y, overlay_w, overlay_h},
                                  Style::kBorderRadiusMD, modal_style);
-    const char* title = "快速切换";
+    const char* title = "功能菜单";
     const int title_w = rawdraw::MeasureTextWidth(title, title_font);
     rawdraw::DrawStyledText(fb, width, overlay_x + (overlay_w - title_w) / 2,
                             rawdraw::InkCenteredTextTopYInBox(title_font, title, overlay_y, titlebar_h, 0),

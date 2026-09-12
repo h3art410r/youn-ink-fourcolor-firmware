@@ -1,438 +1,436 @@
-/**
- * @file weather_api.cc
- * @brief HeWeather API client implementation
- *
- * Uses esp_http_client for HTTP GET requests to HeWeather API.
- * JSON parsing done inline (no cJSON dependency to save flash).
- *
- * Key design:
- * - Hourly auto-refresh via esp_timer
- * - select()-based timeout (NO setsockopt(SO_RCVTIMEO))
- * - Thread-safe via static state
- *
- * API endpoints:
- *   https://devapi.qweather.com/v7/weather/now?key=XXX&location=XXX
- *   https://devapi.qweather.com/v7/weather/3d?key=XXX&location=XXX
- *   https://devapi.qweather.com/v7/air/now?key=XXX&location=XXX
- */
-
 #include "weather_api.h"
+#include "settings.h"
 
-#include <esp_log.h>
+#include <esp_crt_bundle.h>
 #include <esp_http_client.h>
+#include <esp_log.h>
 #include <esp_timer.h>
 #include <cJSON.h>
-#include <cstring>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
 #include <cstdio>
+#include <cstring>
+#include <string>
 
-static const char* kTag = "WeatherApi";
+namespace {
 
-// ============================================================
-// Static state
-// ============================================================
+constexpr char kTag[] = "WeatherApi";
+constexpr int64_t kRefreshIntervalUs = 3600LL * 1000000LL;
+constexpr char kForecastUrl[] =
+    "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
+    "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m"
+    "&daily=weather_code,temperature_2m_max,temperature_2m_min&forecast_days=4"
+    "&wind_speed_unit=ms&timezone=Asia%%2FShanghai";
 
-static char s_api_key[64] = {0};
-static char s_city_code[16] = {0};
-static WeatherCallback s_callback;
-static bool s_initialized = false;
-static bool s_in_progress = false;
-static WeatherData s_last_data;
-static esp_timer_handle_t s_timer = nullptr;
+char s_city_name[32] = {};
+char s_provider[16] = "open-meteo";
+char s_qweather_host[128] = {};
+char s_qweather_auth_type[16] = "api_key";
+char s_qweather_credential[384] = {};
+double s_latitude = 0;
+double s_longitude = 0;
+WeatherCallback s_callback;
+bool s_initialized = false;
+bool s_in_progress = false;
+bool s_fetch_pending = false;
+WeatherData s_last_data;
+esp_timer_handle_t s_timer = nullptr;
+TaskHandle_t s_worker_task = nullptr;
+char s_response_buf[12 * 1024] = {};
+int s_response_len = 0;
 
-// ============================================================
-// Weather icon mapping
-// ============================================================
-
-WeatherIcon ParseWeatherIcon(const char* text) {
-    if (!text || !text[0]) return WeatherIcon::Unknown;
-
-    // Sunny variants
-    if (strstr(text, "晴") != nullptr) return WeatherIcon::Sunny;
-
-    // Cloudy
-    if (strstr(text, "多云") != nullptr) return WeatherIcon::Cloudy;
-    if (strstr(text, "晴间多云") != nullptr) return WeatherIcon::Cloudy;
-
-    // Overcast
-    if (strstr(text, "阴") != nullptr) return WeatherIcon::Overcast;
-
-    // Rain (all types)
-    if (strstr(text, "雨") != nullptr) return WeatherIcon::Rain;
-
-    // Snow
-    if (strstr(text, "雪") != nullptr) return WeatherIcon::Snow;
-
-    // Fog/Haze
-    if (strstr(text, "雾") != nullptr) return WeatherIcon::Fog;
-    if (strstr(text, "霾") != nullptr) return WeatherIcon::Fog;
-    if (strstr(text, "沙尘") != nullptr) return WeatherIcon::Fog;
-
-    return WeatherIcon::Unknown;
+const char* WeatherText(int code) {
+    if (code == 0) return "晴";
+    if (code <= 2) return "多云";
+    if (code == 3) return "阴";
+    if (code == 45 || code == 48) return "雾";
+    if (code <= 57) return "毛毛雨";
+    if (code <= 67) return "雨";
+    if (code <= 77) return "雪";
+    if (code <= 82) return "阵雨";
+    if (code <= 86) return "阵雪";
+    if (code >= 95) return "雷雨";
+    return "多云";
 }
 
-// ============================================================
-// JSON parsing (using cJSON)
-// ============================================================
+const char* WeatherIconCode(int code) {
+    if (code == 0 || code == 1) return "100";
+    if (code <= 3) return "101";
+    if (code == 45 || code == 48) return "500";
+    if (code <= 67 || (code >= 80 && code <= 82)) return "305";
+    if (code <= 77 || (code >= 85 && code <= 86)) return "400";
+    if (code >= 95) return "302";
+    return "101";
+}
 
-static bool ParseNowJson(const char* json, WeatherData* out) {
-    if (!json || !out) return false;
+std::string WindDirection(int degrees) {
+    static constexpr const char* kDirections[] = {
+        "北风", "东北风", "东风", "东南风", "南风", "西南风", "西风", "西北风"};
+    const int index = ((degrees + 22) % 360) / 45;
+    return kDirections[index];
+}
 
-    cJSON* root = cJSON_Parse(json);
-    if (!root) {
-        ESP_LOGE(kTag, "Failed to parse JSON");
-        return false;
+int BeaufortScale(double speed_ms) {
+    static constexpr double kUpperBounds[] = {
+        0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9, 17.2, 20.8, 24.5, 28.5, 32.7};
+    for (int scale = 0; scale < 12; ++scale) {
+        if (speed_ms < kUpperBounds[scale]) return scale;
     }
+    return 12;
+}
 
-    // Check response code
-    cJSON* code_item = cJSON_GetObjectItem(root, "code");
-    if (!cJSON_IsString(code_item) || !code_item->valuestring) {
-        ESP_LOGE(kTag, "No 'code' field in response");
-        cJSON_Delete(root);
-        return false;
-    }
-    const char* code = code_item->valuestring;
-    if (strcmp(code, "200") != 0) {
-        ESP_LOGE(kTag, "API error code: %s", code);
-        cJSON_Delete(root);
-        return false;
-    }
-
-    cJSON* now = cJSON_GetObjectItem(root, "now");
-    if (!now) {
-        ESP_LOGE(kTag, "No 'now' object in response");
-        cJSON_Delete(root);
-        return false;
-    }
-
-    auto get_str = [now](const char* key) -> const char* {
-        cJSON* item = cJSON_GetObjectItem(now, key);
-        return item ? item->valuestring : nullptr;
-    };
-
-    // Parse temperature
-    const char* tmp = get_str("temp");
-    if (tmp) {
-        out->temp = tmp;
-        out->temp_int = atoi(tmp);
-    }
-
-    // Feels like
-    const char* feels = get_str("feelsLike");
-    if (feels) out->feels_like = feels;
-
-    // Weather text + icon
-    const char* icon = get_str("icon");
-    if (icon) out->weather_icon = icon;
-
-    const char* weather = get_str("text");
-    if (weather) out->weather_text = weather;
-
-    // Wind
-    const char* wind_dir = get_str("windDir");
-    if (wind_dir) out->wind_dir = wind_dir;
-
-    const char* wind_scale = get_str("windScale");
-    if (wind_scale) out->wind_scale = wind_scale;
-
-    // Humidity
-    const char* humidity = get_str("humidity");
-    if (humidity) out->humidity = humidity;
-
-    // Update time
-    const char* update = get_str("obsTime");
-    if (update) {
-        // Extract HH:MM from "2024-01-15T14:30+08:00"
-        out->update_time = update;
-        const char* t_pos = strchr(update, 'T');
-        if (t_pos && t_pos[1] && t_pos[2] && t_pos[3] == ':') {
-            out->update_time = std::string(t_pos + 1, 5);
-        }
-    }
-
-    cJSON_Delete(root);
+bool ReadNumber(const cJSON* object, const char* key, double* value) {
+    const cJSON* item = cJSON_GetObjectItemCaseSensitive(object, key);
+    if (!cJSON_IsNumber(item)) return false;
+    *value = item->valuedouble;
     return true;
 }
 
-static bool ParseForecastJson(const char* json, WeatherData* out) {
-    if (!json || !out) return false;
-
-    cJSON* root = cJSON_Parse(json);
-    if (!root) {
-        ESP_LOGE(kTag, "Failed to parse forecast JSON");
-        return false;
+bool ValidApiHost(const char* host) {
+    if (!host || !host[0] || strlen(host) >= sizeof(s_qweather_host)) return false;
+    for (const char* p = host; *p; ++p) {
+        if (!( (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+               (*p >= '0' && *p <= '9') || *p == '.' || *p == '-')) return false;
     }
-
-    cJSON* code_item = cJSON_GetObjectItem(root, "code");
-    const char* code = cJSON_IsString(code_item) ? code_item->valuestring : nullptr;
-    if (!code || strcmp(code, "200") != 0) {
-        ESP_LOGE(kTag, "Forecast API error code: %s", code ? code : "null");
-        cJSON_Delete(root);
-        return false;
-    }
-
-    cJSON* daily = cJSON_GetObjectItem(root, "daily");
-    if (!cJSON_IsArray(daily)) {
-        ESP_LOGE(kTag, "No 'daily' array in forecast response");
-        cJSON_Delete(root);
-        return false;
-    }
-
-    out->forecast.clear();
-    const char* labels[3] = {"今天", "明天", "后天"};
-    int index = 0;
-    cJSON* day = nullptr;
-    cJSON_ArrayForEach(day, daily) {
-        if (index >= 3) break;
-        WeatherForecastDay item;
-        item.label = labels[index];
-
-        cJSON* text_day = cJSON_GetObjectItem(day, "textDay");
-        if (cJSON_IsString(text_day) && text_day->valuestring) {
-            item.weather_text = text_day->valuestring;
-        }
-        cJSON* icon_day = cJSON_GetObjectItem(day, "iconDay");
-        if (cJSON_IsString(icon_day) && icon_day->valuestring) {
-            item.icon_code = icon_day->valuestring;
-        }
-        cJSON* temp_min = cJSON_GetObjectItem(day, "tempMin");
-        if (cJSON_IsString(temp_min) && temp_min->valuestring) {
-            item.temp_min = atoi(temp_min->valuestring);
-        } else if (cJSON_IsNumber(temp_min)) {
-            item.temp_min = temp_min->valueint;
-        }
-        cJSON* temp_max = cJSON_GetObjectItem(day, "tempMax");
-        if (cJSON_IsString(temp_max) && temp_max->valuestring) {
-            item.temp_max = atoi(temp_max->valuestring);
-        } else if (cJSON_IsNumber(temp_max)) {
-            item.temp_max = temp_max->valueint;
-        }
-        out->forecast.push_back(item);
-        ++index;
-    }
-
-    cJSON_Delete(root);
-    return !out->forecast.empty();
-}
-
-static bool ParseAirJson(const char* json, WeatherData* out) {
-    if (!json || !out) return false;
-
-    cJSON* root = cJSON_Parse(json);
-    if (!root) {
-        ESP_LOGE(kTag, "Failed to parse air JSON");
-        return false;
-    }
-
-    cJSON* code_item = cJSON_GetObjectItem(root, "code");
-    const char* code = cJSON_IsString(code_item) ? code_item->valuestring : nullptr;
-    if (!code || strcmp(code, "200") != 0) {
-        ESP_LOGW(kTag, "Air API error code: %s", code ? code : "null");
-        cJSON_Delete(root);
-        return false;
-    }
-
-    cJSON* now = cJSON_GetObjectItem(root, "now");
-    if (!cJSON_IsObject(now)) {
-        cJSON_Delete(root);
-        return false;
-    }
-
-    cJSON* category = cJSON_GetObjectItem(now, "category");
-    if (cJSON_IsString(category) && category->valuestring) {
-        out->air_quality = category->valuestring;
-    }
-
-    cJSON* aqi = cJSON_GetObjectItem(now, "aqi");
-    if (cJSON_IsString(aqi) && aqi->valuestring) {
-        out->air_aqi = atoi(aqi->valuestring);
-    } else if (cJSON_IsNumber(aqi)) {
-        out->air_aqi = aqi->valueint;
-    }
-
-    cJSON_Delete(root);
     return true;
 }
 
-// ============================================================
-// HTTP client
-// ============================================================
+bool ParseWeather(const char* json, WeatherData* data) {
+    cJSON* root = cJSON_Parse(json);
+    if (!root) return false;
 
-static char s_response_buf[4096] = {0};
-static int s_response_len = 0;
+    const cJSON* current = cJSON_GetObjectItemCaseSensitive(root, "current");
+    const cJSON* daily = cJSON_GetObjectItemCaseSensitive(root, "daily");
+    double value = 0;
+    int code = 0;
+    bool ok = current && daily && ReadNumber(current, "temperature_2m", &value);
+    if (ok) {
+        char text[16];
+        snprintf(text, sizeof(text), "%.0f", value);
+        data->temp = text;
+        data->temp_int = static_cast<int>(value);
+        if (ReadNumber(current, "apparent_temperature", &value)) {
+            snprintf(text, sizeof(text), "%.0f", value);
+            data->feels_like = text;
+        }
+        if (ReadNumber(current, "relative_humidity_2m", &value)) {
+            snprintf(text, sizeof(text), "%.0f", value);
+            data->humidity = text;
+        }
+        if (ReadNumber(current, "wind_speed_10m", &value)) {
+            snprintf(text, sizeof(text), "%d", BeaufortScale(value));
+            data->wind_scale = text;
+        }
+        if (ReadNumber(current, "wind_direction_10m", &value)) {
+            data->wind_dir = WindDirection(static_cast<int>(value));
+        }
+        if (ReadNumber(current, "weather_code", &value)) code = static_cast<int>(value);
+        data->weather_text = WeatherText(code);
+        data->weather_icon = WeatherIconCode(code);
 
-static esp_err_t HttpEventHandler(esp_http_client_event_t* evt) {
-    switch (evt->event_id) {
-        case HTTP_EVENT_ON_DATA:
-            if (s_response_len + evt->data_len < sizeof(s_response_buf)) {
-                memcpy(s_response_buf + s_response_len, evt->data, evt->data_len);
-                s_response_len += evt->data_len;
+        const cJSON* time = cJSON_GetObjectItemCaseSensitive(current, "time");
+        if (cJSON_IsString(time) && time->valuestring) data->update_time = time->valuestring;
+        data->air_quality = "--";
+        data->air_aqi = -1;
+
+        const cJSON* times = cJSON_GetObjectItemCaseSensitive(daily, "time");
+        const cJSON* codes = cJSON_GetObjectItemCaseSensitive(daily, "weather_code");
+        const cJSON* highs = cJSON_GetObjectItemCaseSensitive(daily, "temperature_2m_max");
+        const cJSON* lows = cJSON_GetObjectItemCaseSensitive(daily, "temperature_2m_min");
+        const int count = cJSON_GetArraySize(times);
+        for (int i = 0; i < count; ++i) {
+            const cJSON* date = cJSON_GetArrayItem(times, i);
+            const cJSON* day_code = cJSON_GetArrayItem(codes, i);
+            const cJSON* high = cJSON_GetArrayItem(highs, i);
+            const cJSON* low = cJSON_GetArrayItem(lows, i);
+            if (!cJSON_IsString(date) || !cJSON_IsNumber(day_code) ||
+                !cJSON_IsNumber(high) || !cJSON_IsNumber(low)) continue;
+
+            WeatherForecastDay day;
+            day.label = i == 0 ? "今天" : (i == 1 ? "明天" : date->valuestring + 5);
+            day.weather_text = WeatherText(day_code->valueint);
+            day.icon_code = WeatherIconCode(day_code->valueint);
+            day.temp_max = static_cast<int32_t>(high->valuedouble);
+            day.temp_min = static_cast<int32_t>(low->valuedouble);
+            data->forecast.push_back(day);
+        }
+    }
+
+    cJSON_Delete(root);
+    return ok;
+}
+
+bool ParseQWeatherCurrent(const char* json, WeatherData* data) {
+    cJSON* root = cJSON_Parse(json);
+    if (!root) return false;
+    const cJSON* condition = cJSON_GetObjectItemCaseSensitive(root, "condition");
+    const cJSON* temperature = cJSON_GetObjectItemCaseSensitive(root, "temperature");
+    const cJSON* feels_like = cJSON_GetObjectItemCaseSensitive(root, "feelsLike");
+    const cJSON* wind = cJSON_GetObjectItemCaseSensitive(root, "wind");
+    const cJSON* humidity = cJSON_GetObjectItemCaseSensitive(root, "humidity");
+    double value = 0;
+    bool ok = condition && temperature &&
+              ReadNumber(temperature, "value", &value);
+    if (ok) {
+        char text[16];
+        snprintf(text, sizeof(text), "%.0f", value);
+        data->temp = text;
+        data->temp_int = static_cast<int>(value);
+        if (ReadNumber(feels_like, "value", &value)) {
+            snprintf(text, sizeof(text), "%.0f", value);
+            data->feels_like = text;
+        }
+        if (cJSON_IsNumber(humidity)) {
+            snprintf(text, sizeof(text), "%.0f", humidity->valuedouble * 100.0);
+            data->humidity = text;
+        }
+        const cJSON* text_item = cJSON_GetObjectItemCaseSensitive(condition, "text");
+        const cJSON* code_item = cJSON_GetObjectItemCaseSensitive(condition, "code");
+        if (cJSON_IsString(text_item)) data->weather_text = text_item->valuestring;
+        if (cJSON_IsString(code_item)) data->weather_icon = code_item->valuestring;
+        const cJSON* wind_direction = cJSON_GetObjectItemCaseSensitive(wind, "direction");
+        const cJSON* wind_compass = cJSON_GetObjectItemCaseSensitive(wind_direction, "compass");
+        const cJSON* wind_scale = cJSON_GetObjectItemCaseSensitive(wind, "scale");
+        if (cJSON_IsNumber(wind_scale)) {
+            snprintf(text, sizeof(text), "%d", wind_scale->valueint);
+            data->wind_scale = text;
+        }
+        if (cJSON_IsString(wind_compass)) {
+            static const char* kCompass[] = {"n", "nne", "ne", "ene", "e", "ese", "se", "sse",
+                                             "s", "ssw", "sw", "wsw", "w", "wnw", "nw", "nnw"};
+            static const char* kChinese[] = {"北风", "北东北风", "东北风", "东东北风", "东风", "东东南风", "东南风", "南东南风",
+                                             "南风", "南西南风", "西南风", "西西南风", "西风", "西西北风", "西北风", "北西北风"};
+            for (int i = 0; i < 16; ++i) {
+                if (strcmp(wind_compass->valuestring, kCompass[i]) == 0) {
+                    data->wind_dir = kChinese[i];
+                    break;
+                }
             }
-            break;
-        default:
-            break;
+        }
+        data->air_quality = "--";
+        data->air_aqi = -1;
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
+bool ParseQWeatherDaily(const char* json, WeatherData* data) {
+    cJSON* root = cJSON_Parse(json);
+    if (!root) return false;
+    const cJSON* days = cJSON_GetObjectItemCaseSensitive(root, "days");
+    const int count = cJSON_GetArraySize(days);
+    data->forecast.clear();
+    for (int i = 0; i < count && i < 4; ++i) {
+        const cJSON* item = cJSON_GetArrayItem(days, i);
+        const cJSON* daytime = cJSON_GetObjectItemCaseSensitive(item, "daytime");
+        const cJSON* condition = cJSON_GetObjectItemCaseSensitive(daytime, "condition");
+        const cJSON* high = cJSON_GetObjectItemCaseSensitive(daytime, "temperatureMax");
+        const cJSON* low = cJSON_GetObjectItemCaseSensitive(daytime, "temperatureMin");
+        double high_value = 0, low_value = 0;
+        if (!ReadNumber(high, "value", &high_value) || !ReadNumber(low, "value", &low_value)) continue;
+        const cJSON* text = cJSON_GetObjectItemCaseSensitive(condition, "text");
+        const cJSON* code = cJSON_GetObjectItemCaseSensitive(condition, "code");
+        WeatherForecastDay day;
+        day.label = i == 0 ? "今天" : (i == 1 ? "明天" : "后天");
+        if (cJSON_IsString(text)) day.weather_text = text->valuestring;
+        if (cJSON_IsString(code)) day.icon_code = code->valuestring;
+        day.temp_max = static_cast<int32_t>(high_value);
+        day.temp_min = static_cast<int32_t>(low_value);
+        data->forecast.push_back(day);
+    }
+    cJSON_Delete(root);
+    return !data->forecast.empty();
+}
+
+esp_err_t HttpEventHandler(esp_http_client_event_t* event) {
+    if (event->event_id == HTTP_EVENT_ON_DATA &&
+        s_response_len + event->data_len < sizeof(s_response_buf)) {
+        memcpy(s_response_buf + s_response_len, event->data, event->data_len);
+        s_response_len += event->data_len;
     }
     return ESP_OK;
 }
 
-static bool HttpGet(const char* url) {
+bool HttpGet(const char* url, const char* auth_type = nullptr, const char* credential = nullptr) {
     s_response_len = 0;
     memset(s_response_buf, 0, sizeof(s_response_buf));
-
     esp_http_client_config_t config = {};
     config.url = url;
     config.method = HTTP_METHOD_GET;
     config.event_handler = HttpEventHandler;
     config.timeout_ms = 10000;
-    config.disable_auto_redirect = false;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
-        ESP_LOGE(kTag, "Failed to init HTTP client");
-        return false;
+    if (!client) return false;
+    if (auth_type && credential && credential[0]) {
+        esp_http_client_set_header(client, "X-QW-Api-Key", credential);
     }
-
-    esp_err_t err = esp_http_client_perform(client);
-    if (err != ESP_OK) {
-        ESP_LOGE(kTag, "HTTP request failed: %s", esp_err_to_name(err));
-        esp_http_client_cleanup(client);
-        return false;
-    }
-
-    int status = esp_http_client_get_status_code(client);
-    if (status != 200) {
-        ESP_LOGE(kTag, "HTTP status: %d for %s", status, url);
-        esp_http_client_cleanup(client);
-        return false;
-    }
-
-    s_response_buf[s_response_len] = '\0';
+    const esp_err_t result = esp_http_client_perform(client);
+    const int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
+    if (result != ESP_OK || status != 200) {
+        ESP_LOGW(kTag, "Forecast request failed: %s, HTTP %d",
+                 esp_err_to_name(result), status);
+        return false;
+    }
+    s_response_buf[s_response_len] = '\0';
     return true;
 }
 
-static void DoFetch(void* arg) {
-    (void)arg;
-    if (!s_initialized || s_in_progress) return;
-
-    if (!s_api_key[0] || !s_city_code[0]) {
-        ESP_LOGE(kTag, "API key or city code not set");
-        return;
-    }
-
-    s_in_progress = true;
+void DoFetch() {
+    char city_name[sizeof(s_city_name)];
+    strncpy(city_name, s_city_name, sizeof(city_name) - 1);
+    city_name[sizeof(city_name) - 1] = '\0';
+    char provider[sizeof(s_provider)];
+    char qweather_host[sizeof(s_qweather_host)];
+    char qweather_auth_type[sizeof(s_qweather_auth_type)];
+    char qweather_credential[sizeof(s_qweather_credential)];
+    strlcpy(provider, s_provider, sizeof(provider));
+    strlcpy(qweather_host, s_qweather_host, sizeof(qweather_host));
+    strlcpy(qweather_auth_type, s_qweather_auth_type, sizeof(qweather_auth_type));
+    strlcpy(qweather_credential, s_qweather_credential, sizeof(qweather_credential));
+    const double latitude = s_latitude;
+    const double longitude = s_longitude;
     WeatherData data;
-
-    char url[256];
-    snprintf(url, sizeof(url),
-             "https://devapi.qweather.com/v7/weather/now?key=%s&location=%s",
-             s_api_key, s_city_code);
-    ESP_LOGI(kTag, "Fetching current weather: %s", url);
-    if (!HttpGet(url) || !ParseNowJson(s_response_buf, &data)) {
-        ESP_LOGE(kTag, "Failed to fetch or parse current weather");
-        s_in_progress = false;
-        return;
-    }
-
-    snprintf(url, sizeof(url),
-             "https://devapi.qweather.com/v7/weather/3d?key=%s&location=%s",
-             s_api_key, s_city_code);
-    ESP_LOGI(kTag, "Fetching forecast: %s", url);
-    if (!HttpGet(url) || !ParseForecastJson(s_response_buf, &data)) {
-        ESP_LOGW(kTag, "Failed to fetch or parse 3-day forecast");
-    }
-
-    snprintf(url, sizeof(url),
-             "https://devapi.qweather.com/v7/air/now?key=%s&location=%s",
-             s_api_key, s_city_code);
-    ESP_LOGI(kTag, "Fetching air quality: %s", url);
-    if (!HttpGet(url) || !ParseAirJson(s_response_buf, &data)) {
-        ESP_LOGW(kTag, "Failed to fetch or parse air quality");
+    data.city = city_name;
+    if (strcmp(provider, "qweather") == 0) {
+        if (!qweather_host[0] || !qweather_credential[0]) {
+            ESP_LOGW(kTag, "QWeather selected but Host or credential is missing");
+            return;
+        }
+        char url[384];
+        snprintf(url, sizeof(url), "https://%s/weather/v1/current/%.2f/%.2f?lang=zh",
+                 qweather_host, latitude, longitude);
+        if (!HttpGet(url, qweather_auth_type, qweather_credential) ||
+            !ParseQWeatherCurrent(s_response_buf, &data)) {
+            ESP_LOGW(kTag, "Could not load QWeather current conditions");
+            return;
+        }
+        snprintf(url, sizeof(url), "https://%s/weather/v1/daily/%.2f/%.2f?days=4&localTime=true&lang=zh",
+                 qweather_host, latitude, longitude);
+        if (!HttpGet(url, qweather_auth_type, qweather_credential) ||
+            !ParseQWeatherDaily(s_response_buf, &data)) {
+            ESP_LOGW(kTag, "Could not load QWeather daily forecast");
+        }
+        data.source = "QWeather · developer.qweather.com";
+    } else {
+        char url[512];
+        snprintf(url, sizeof(url), kForecastUrl, latitude, longitude);
+        if (!HttpGet(url) || !ParseWeather(s_response_buf, &data)) {
+            ESP_LOGW(kTag, "Could not load Open-Meteo forecast");
+            return;
+        }
+        data.source = "Open-Meteo.com · CC BY 4.0";
     }
 
     s_last_data = data;
-    ESP_LOGI(kTag, "Weather: %s %s°C AQI=%d forecast=%d",
-             data.weather_text.c_str(),
-             data.temp.c_str(),
-             data.air_aqi,
-             static_cast<int>(data.forecast.size()));
+    if (s_callback) s_callback(s_last_data);
+    ESP_LOGI(kTag, "Weather updated for %s: %s C, %s",
+             city_name, data.temp.c_str(), data.weather_text.c_str());
+}
 
-    if (s_callback) {
-        s_callback(data);
+void ScheduleFetch() {
+    if (!s_initialized || !s_timer || !s_worker_task) return;
+    if (s_in_progress) {
+        s_fetch_pending = true;
+        return;
+    }
+    esp_timer_stop(s_timer);
+    const esp_err_t result = esp_timer_start_once(s_timer, 1000);
+    if (result != ESP_OK) ESP_LOGW(kTag, "Could not schedule weather fetch: %s", esp_err_to_name(result));
+}
+
+void WorkerTask(void*) {
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        s_in_progress = true;
+        DoFetch();
+        s_in_progress = false;
+
+        if (s_fetch_pending) {
+            s_fetch_pending = false;
+            ScheduleFetch();
+        } else {
+            const esp_err_t result = esp_timer_start_once(s_timer, kRefreshIntervalUs);
+            if (result != ESP_OK) {
+                ESP_LOGW(kTag, "Could not schedule hourly refresh: %s", esp_err_to_name(result));
+            }
+        }
+    }
+}
+
+void TimerCallback(void*) {
+    if (s_worker_task) xTaskNotifyGive(s_worker_task);
+}
+
+}  // namespace
+
+WeatherIcon ParseWeatherIcon(const char* text) {
+    if (!text || !text[0]) return WeatherIcon::Unknown;
+    if (strstr(text, "晴")) return WeatherIcon::Sunny;
+    if (strstr(text, "多云")) return WeatherIcon::Cloudy;
+    if (strstr(text, "阴")) return WeatherIcon::Overcast;
+    if (strstr(text, "雨")) return WeatherIcon::Rain;
+    if (strstr(text, "雪")) return WeatherIcon::Snow;
+    if (strstr(text, "雾") || strstr(text, "霾")) return WeatherIcon::Fog;
+    return WeatherIcon::Unknown;
+}
+
+void weather_api_init(const char* city_name, double latitude, double longitude,
+                      WeatherCallback callback) {
+    if (s_initialized) return;
+    strncpy(s_city_name, city_name ? city_name : "", sizeof(s_city_name) - 1);
+    s_latitude = latitude;
+    s_longitude = longitude;
+    s_callback = std::move(callback);
+    Settings config("weather_api");
+    strlcpy(s_provider, config.GetString("provider", "open-meteo").c_str(), sizeof(s_provider));
+    strlcpy(s_qweather_host, config.GetString("qw_host", "").c_str(), sizeof(s_qweather_host));
+    const std::string saved_auth = config.GetString("qw_auth", "api_key");
+    strlcpy(s_qweather_credential, config.GetString("qw_credential", "").c_str(), sizeof(s_qweather_credential));
+    strlcpy(s_qweather_auth_type, "api_key", sizeof(s_qweather_auth_type));
+    if (saved_auth == "jwt") {
+        // A stored bearer JWT must never be sent as an API key after simplifying this build.
+        s_qweather_credential[0] = '\0';
+        config.EraseKey("qw_credential");
     }
 
-    s_in_progress = false;
-}
-
-// ============================================================
-// Timer callback
-// ============================================================
-
-static void TimerCallback(void* arg) {
-    ESP_LOGD(kTag, "Hourly weather refresh triggered");
-    DoFetch(arg);
-}
-
-// ============================================================
-// Public API
-// ============================================================
-
-void weather_api_init(const char* api_key, const char* city_code, WeatherCallback callback) {
-    if (s_initialized) {
-        ESP_LOGW(kTag, "Already initialized");
+    if (xTaskCreate(WorkerTask, "weather_fetch", 16 * 1024, nullptr, 3,
+                    &s_worker_task) != pdPASS) {
+        ESP_LOGE(kTag, "Could not create weather worker task");
         return;
     }
 
-    strncpy(s_api_key, api_key, sizeof(s_api_key) - 1);
-    strncpy(s_city_code, city_code, sizeof(s_city_code) - 1);
-    s_callback = callback;
-
-    // Create hourly refresh timer
-    esp_timer_create_args_t timer_args = {
-        .callback = TimerCallback,
-        .arg = nullptr,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "weather_refresh",
-        .skip_unhandled_events = true,
-    };
-
-    if (esp_timer_create(&timer_args, &s_timer) == ESP_OK) {
-        // Start with 1 hour interval (3600 * 1,000,000 microseconds)
-        esp_timer_start_periodic(s_timer, 3600LL * 1000000LL);
-        ESP_LOGI(kTag, "Timer started (1h interval)");
-    } else {
-        ESP_LOGE(kTag, "Failed to create timer");
+    esp_timer_create_args_t timer_args = {};
+    timer_args.callback = TimerCallback;
+    timer_args.dispatch_method = ESP_TIMER_TASK;
+    timer_args.name = "weather_refresh";
+    if (esp_timer_create(&timer_args, &s_timer) != ESP_OK) {
+        ESP_LOGE(kTag, "Could not create refresh timer");
+        return;
     }
-
     s_initialized = true;
-
-    // Fetch immediately on init
-    DoFetch(nullptr);
-
-    ESP_LOGI(kTag, "Weather API initialized: city=%s", s_city_code);
+    ScheduleFetch();
 }
 
 bool weather_api_fetch_now() {
     if (!s_initialized) return false;
-    if (s_in_progress) return false;
-
-    DoFetch(nullptr);
+    ScheduleFetch();
     return true;
 }
 
-void weather_api_set_city(const char* city_code) {
-    strncpy(s_city_code, city_code, sizeof(s_city_code) - 1);
-    ESP_LOGI(kTag, "City changed to: %s", s_city_code);
-
-    // Fetch new data for new city
-    weather_api_fetch_now();
-}
-
-void weather_api_set_key(const char* api_key) {
-    strncpy(s_api_key, api_key, sizeof(s_api_key) - 1);
+void weather_api_set_location(const char* city_name, double latitude, double longitude) {
+    strncpy(s_city_name, city_name ? city_name : "", sizeof(s_city_name) - 1);
+    s_city_name[sizeof(s_city_name) - 1] = '\0';
+    s_latitude = latitude;
+    s_longitude = longitude;
+    ScheduleFetch();
 }
 
 const char* weather_api_get_city() {
-    return s_city_code;
+    return s_city_name;
 }
 
 bool weather_api_is_ready() {
@@ -441,4 +439,40 @@ bool weather_api_is_ready() {
 
 const WeatherData* weather_api_get_last_data() {
     return &s_last_data;
+}
+
+bool weather_api_set_provider(const char* provider, const char* api_host,
+                              const char* auth_type, const char* credential) {
+    if (!provider || (strcmp(provider, "open-meteo") != 0 && strcmp(provider, "qweather") != 0)) return false;
+    const char* next_host = api_host && api_host[0] ? api_host : s_qweather_host;
+    const char* next_credential = credential && credential[0] ? credential : s_qweather_credential;
+    if (api_host && api_host[0] && !ValidApiHost(api_host)) return false;
+    if (credential && strlen(credential) >= sizeof(s_qweather_credential)) return false;
+    if (strcmp(provider, "qweather") == 0 && (!ValidApiHost(next_host) || !next_credential[0])) return false;
+    Settings config("weather_api", true);
+    s_provider[0] = '\0';
+    strlcpy(s_provider, provider, sizeof(s_provider));
+    config.SetString("provider", s_provider);
+    if (api_host && api_host[0]) {
+        strlcpy(s_qweather_host, api_host, sizeof(s_qweather_host));
+        config.SetString("qw_host", s_qweather_host);
+    }
+    strlcpy(s_qweather_auth_type, "api_key", sizeof(s_qweather_auth_type));
+    config.SetString("qw_auth", s_qweather_auth_type);
+    if (credential && credential[0]) {
+        strlcpy(s_qweather_credential, credential, sizeof(s_qweather_credential));
+        config.SetString("qw_credential", s_qweather_credential);
+    }
+    if (s_initialized) ScheduleFetch();
+    return true;
+}
+
+void weather_api_get_provider(char* provider, size_t provider_size,
+                              char* api_host, size_t api_host_size,
+                              char* auth_type, size_t auth_type_size,
+                              bool* credential_configured) {
+    if (provider && provider_size) strlcpy(provider, s_provider, provider_size);
+    if (api_host && api_host_size) strlcpy(api_host, s_qweather_host, api_host_size);
+    if (auth_type && auth_type_size) strlcpy(auth_type, s_qweather_auth_type, auth_type_size);
+    if (credential_configured) *credential_configured = s_qweather_credential[0] != '\0';
 }
