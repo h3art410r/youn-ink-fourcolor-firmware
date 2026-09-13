@@ -51,6 +51,15 @@ std::string FitTextToWidth(const std::string& text, const lv_font_t* font, int m
     return out + "...";
 }
 
+void DrawCenteredTextInBox(uint8_t* fb, int width, const Rect& box,
+                           const std::string& text, const lv_font_t* font, Color color) {
+    if (text.empty() || !font) return;
+    const int text_width = MeasureTextWidth(text.c_str(), font);
+    const int x = box.x + std::max(0, (box.w - text_width) / 2);
+    const int y = InkCenteredTextTopYInBox(font, text.c_str(), box.y, box.h, 0);
+    DrawText(fb, width, x, y, text.c_str(), font, color);
+}
+
 const char* IconGlyphForCode(const std::string& icon_code, const std::string& weather_text) {
     auto starts_with_digit = [](const std::string& value, int low, int high) -> bool {
         if (value.empty()) return false;
@@ -179,49 +188,37 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
     } else {
         std::string location = city_name_.empty() ? current_data_.city : city_name_;
         if (location.empty()) location = "杭州";
-        const std::string location_line = FitTextToWidth(location, title_font_, 220);
+        const std::string location_line = FitTextToWidth(location, title_font_, 170);
 
-        // A simple, consistent reading order: city/source, current weather,
-        // air and comfort metrics, then the short forecast.
-        const int header_y = Style::kStatusBarHeight + 3;
-        DrawText(fb, width, 18,
-                 InkCenteredTextTopY(title_font_, location_line.c_str(), header_y + 4, 0),
-                 location_line.c_str(), title_font_, text);
+        // Screen regions are fixed and non-overlapping: header 30-52,
+        // current weather 57-139, metrics 147-202, forecast 212-278.
+        DrawCenteredTextInBox(fb, width, {16, 30, 180, 22}, location_line, title_font_, text);
         const std::string source = current_data_.source.find("QWeather") != std::string::npos
             ? "和风天气"
             : (current_data_.source.empty() ? "天气数据" : "Open-Meteo · CC BY 4.0");
-        const int source_w = MeasureTextWidth(source.c_str(), font_);
-        DrawText(fb, width, width - source_w - 18,
-                 InkCenteredTextTopY(font_, source.c_str(), header_y + 7, 0),
-                 source.c_str(), font_, secondary);
+        const std::string source_line = FitTextToWidth(source, font_, 150);
+        DrawCenteredTextInBox(fb, width, {226, 30, 158, 22}, source_line, font_, secondary);
 
-        Rect hero{16, 57, width - 32, 84};
+        Rect hero{16, 57, width - 32, 82};
         DrawStyledRoundRect(fb, width, height, hero, Style::kBorderRadiusLG, card_style);
         char temp_buf[20];
         snprintf(temp_buf, sizeof(temp_buf), "%s°", current_data_.temp.empty() ? "--" : current_data_.temp.c_str());
-        DrawText(fb, width, 34,
-                 InkCenteredTextTopY(title_font_, temp_buf, hero.y + 13, 0),
-                 temp_buf, title_font_, text);
+        DrawCenteredTextInBox(fb, width, {28, 66, 156, 40}, temp_buf, title_font_, text);
         char feels_buf[32];
         snprintf(feels_buf, sizeof(feels_buf), "体感 %s°",
                  current_data_.feels_like.empty() ? (current_data_.temp.empty() ? "--" : current_data_.temp.c_str()) : current_data_.feels_like.c_str());
-        DrawText(fb, width, 36,
-                 InkCenteredTextTopY(font_, feels_buf, hero.y + 55, 0),
-                 feels_buf, font_, secondary);
+        DrawCenteredTextInBox(fb, width, {28, 107, 156, 23}, feels_buf, font_, secondary);
 
         const char* desc_glyph = IconGlyphForCode(current_data_.weather_icon, current_data_.weather_text);
         const int icon_w = MeasureTextWidth(desc_glyph, &weather_icons_48);
-        DrawIcon(fb, width, 258 - icon_w / 2,
-                 InkCenteredTextTopY(&weather_icons_48, desc_glyph, hero.y + 8, 0),
+        DrawIcon(fb, width, 270 - icon_w / 2,
+                 InkCenteredTextTopY(&weather_icons_48, desc_glyph, 87, 0),
                  desc_glyph, &weather_icons_48, accent);
         const std::string desc = FitTextToWidth(current_data_.weather_text.empty() ? "天气 --" : current_data_.weather_text,
-                                                title_font_, 150);
-        const int desc_w = MeasureTextWidth(desc.c_str(), title_font_);
-        DrawText(fb, width, 258 - desc_w / 2,
-                 InkCenteredTextTopY(title_font_, desc.c_str(), hero.y + 57, 0),
-                 desc.c_str(), title_font_, text);
+                                                title_font_, 170);
+        DrawCenteredTextInBox(fb, width, {190, 111, 160, 22}, desc, title_font_, text);
 
-        Rect metrics{16, 150, width - 32, 48};
+        Rect metrics{16, 147, width - 32, 55};
         DrawStyledRoundRect(fb, width, height, metrics, Style::kBorderRadiusMD, panel_style);
         const int cell_w = metrics.w / 3;
         const char* labels[] = {"空气质量", "湿度", "风力 / 风向"};
@@ -236,12 +233,12 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
         for (int i = 0; i < 3; ++i) {
             const int x = metrics.x + i * cell_w;
             if (i > 0) DrawVLine(fb, width, x, metrics.y + 8, metrics.y + metrics.h - 8, border);
-            const int label_w = MeasureTextWidth(labels[i], font_);
-            const int value_w = MeasureTextWidth(values[i].c_str(), font_);
-            DrawText(fb, width, x + (cell_w - label_w) / 2,
-                     InkCenteredTextTopY(font_, labels[i], metrics.y + 7, 0), labels[i], font_, secondary);
-            DrawText(fb, width, x + (cell_w - value_w) / 2,
-                     InkCenteredTextTopY(font_, values[i].c_str(), metrics.y + 28, 0), values[i].c_str(), font_, text);
+            const Rect cell{x, metrics.y + 3, cell_w, metrics.h - 6};
+            const Rect label_box{cell.x + 4, cell.y, cell.w - 8, 20};
+            const Rect value_box{cell.x + 4, cell.y + 23, cell.w - 8, 24};
+            DrawCenteredTextInBox(fb, width, label_box, labels[i], font_, secondary);
+            const std::string value = FitTextToWidth(values[i], font_, value_box.w);
+            DrawCenteredTextInBox(fb, width, value_box, value, font_, text);
         }
 
         const std::vector<ForecastRenderItem> forecast_items = BuildForecastItems(current_data_);
@@ -250,7 +247,7 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
             page_index_ = forecast_count - 1;
         }
 
-        Rect forecast_panel{16, 210, width - 32, 66};
+        Rect forecast_panel{16, 212, width - 32, 66};
         DrawStyledRoundRect(fb, width, height, forecast_panel, Style::kBorderRadiusMD, panel_style);
         const int card_w = forecast_panel.w / 4;
         for (int i = 0; i < forecast_count && i < 4; ++i) {
@@ -261,21 +258,18 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
                     set_pixel(fb, width, x, y, border);
                 }
             }
-            const int label_w = MeasureTextWidth(item.label.c_str(), font_);
-            DrawText(fb, width, x + (card_w - label_w) / 2,
-                     InkCenteredTextTopY(font_, item.label.c_str(), forecast_panel.y + 12, 0),
-                     item.label.c_str(), font_, secondary);
+            DrawCenteredTextInBox(fb, width, {x + 3, forecast_panel.y + 3, card_w - 6, 17},
+                                  item.label, font_, secondary);
             const char* glyph = IconGlyphForCode(item.icon_code, item.weather_text);
-            const int icon_center_y = forecast_panel.y + 30;
+            const int icon_center_y = forecast_panel.y + 34;
             const int forecast_icon_w = MeasureTextWidth(glyph, &weather_icons_16);
             DrawIcon(fb, width, x + (card_w - forecast_icon_w) / 2, InkCenteredTextTopY(&weather_icons_16, glyph, icon_center_y, 0),
                      glyph, &weather_icons_16, accent);
             char temp_range[24];
             snprintf(temp_range, sizeof(temp_range), "%d/%d°C", static_cast<int>(item.temp_min), static_cast<int>(item.temp_max));
-            const int range_w = MeasureTextWidth(temp_range, font_);
-            DrawText(fb, width, x + (card_w - range_w) / 2,
-                     InkCenteredTextTopY(font_, temp_range, forecast_panel.y + 48, 0),
-                     temp_range, font_, text);
+            const std::string range = FitTextToWidth(temp_range, font_, card_w - 8);
+            DrawCenteredTextInBox(fb, width, {x + 3, forecast_panel.y + 45, card_w - 6, 17},
+                                  range, font_, text);
         }
     }
 
