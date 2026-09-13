@@ -131,6 +131,7 @@ idf_component_register(
         fatfs
         esp_driver_i2s
         esp_http_client
+        esp_rom
         esp_https_ota
         json
         esp_timer

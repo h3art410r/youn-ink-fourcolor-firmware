@@ -300,8 +300,15 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
         }
     }
 
-    const std::string attribution = "数据：" +
-        (current_data_.source.empty() ? std::string("Open-Meteo.com · CC BY 4.0") : current_data_.source);
+    std::string source = current_data_.source;
+    if (source.empty()) {
+        char provider[16] = {};
+        weather_api_get_provider(provider, sizeof(provider), nullptr, 0, nullptr);
+        source = strcmp(provider, "qweather") == 0
+            ? "QWeather"
+            : "Open-Meteo.com · CC BY 4.0";
+    }
+    const std::string attribution = "数据：" + source;
     const int attribution_width = MeasureTextWidth(attribution.c_str(), font_);
     DrawText(fb, width, std::max(4, width - attribution_width - 8),
              height - font_->line_height - 2, attribution.c_str(), font_, secondary);

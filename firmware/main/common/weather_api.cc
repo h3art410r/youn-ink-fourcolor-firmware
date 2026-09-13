@@ -4,6 +4,7 @@
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
 #include <esp_log.h>
+#include <miniz.h>
 #include <esp_timer.h>
 #include <cJSON.h>
 #include <freertos/FreeRTOS.h>
@@ -17,6 +18,7 @@ namespace {
 
 constexpr char kTag[] = "WeatherApi";
 constexpr int64_t kRefreshIntervalUs = 3600LL * 1000000LL;
+constexpr int64_t kRetryIntervalUs = 60LL * 1000000LL;
 constexpr char kForecastUrl[] =
     "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
     "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,wind_direction_10m"
@@ -37,7 +39,63 @@ WeatherData s_last_data;
 esp_timer_handle_t s_timer = nullptr;
 TaskHandle_t s_worker_task = nullptr;
 char s_response_buf[12 * 1024] = {};
+char s_decompressed_buf[12 * 1024] = {};
 int s_response_len = 0;
+
+bool DecodeGzipResponse() {
+    const size_t input_len = static_cast<size_t>(s_response_len);
+    const auto* input = reinterpret_cast<const uint8_t*>(s_response_buf);
+    if (input_len < 2 || input[0] != 0x1f || input[1] != 0x8b) {
+        return true;
+    }
+    if (input_len < 18 || input[2] != 8 || (input[3] & 0xe0) != 0) {
+        ESP_LOGW(kTag, "Invalid GZip response header (len=%u)", static_cast<unsigned>(input_len));
+        return false;
+    }
+
+    size_t offset = 10;
+    const uint8_t flags = input[3];
+    if (flags & 0x04) {
+        if (offset + 2 > input_len - 8) return false;
+        const size_t extra_len = input[offset] | (static_cast<size_t>(input[offset + 1]) << 8);
+        offset += 2 + extra_len;
+    }
+    for (const uint8_t flag : {static_cast<uint8_t>(0x08), static_cast<uint8_t>(0x10)}) {
+        if (flags & flag) {
+            while (offset < input_len - 8 && input[offset] != 0) ++offset;
+            if (offset >= input_len - 8) return false;
+            ++offset;
+        }
+    }
+    if (flags & 0x02) offset += 2;
+    if (offset > input_len - 8) return false;
+
+    const size_t compressed_len = input_len - offset - 8;
+    const size_t decoded_len = tinfl_decompress_mem_to_mem(
+        s_decompressed_buf, sizeof(s_decompressed_buf), input + offset, compressed_len,
+        TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+    if (decoded_len == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) {
+        ESP_LOGW(kTag, "Could not inflate GZip weather response (compressed=%u)",
+                 static_cast<unsigned>(compressed_len));
+        return false;
+    }
+
+    const size_t declared_size = input[input_len - 4] |
+        (static_cast<size_t>(input[input_len - 3]) << 8) |
+        (static_cast<size_t>(input[input_len - 2]) << 16) |
+        (static_cast<size_t>(input[input_len - 1]) << 24);
+    if (decoded_len != declared_size || decoded_len >= sizeof(s_response_buf)) {
+        ESP_LOGW(kTag, "GZip weather response size mismatch (decoded=%u declared=%u)",
+                 static_cast<unsigned>(decoded_len), static_cast<unsigned>(declared_size));
+        return false;
+    }
+
+    memcpy(s_response_buf, s_decompressed_buf, decoded_len);
+    s_response_len = static_cast<int>(decoded_len);
+    s_response_buf[s_response_len] = '\0';
+    ESP_LOGI(kTag, "Inflated GZip weather response: %u bytes", static_cast<unsigned>(decoded_len));
+    return true;
+}
 
 const char* WeatherText(int code) {
     if (code == 0) return "晴";
@@ -263,6 +321,10 @@ bool HttpGet(const char* url, const char* credential = nullptr) {
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) return false;
+    // QWeather compresses API responses by default. The ESP-IDF HTTP client
+    // does not transparently inflate the collected event data, so explicitly
+    // request an identity (uncompressed) response before passing it to cJSON.
+    esp_http_client_set_header(client, "Accept-Encoding", "identity");
     if (credential && credential[0]) {
         esp_http_client_set_header(client, "X-QW-Api-Key", credential);
     }
@@ -275,10 +337,10 @@ bool HttpGet(const char* url, const char* credential = nullptr) {
         return false;
     }
     s_response_buf[s_response_len] = '\0';
-    return true;
+    return DecodeGzipResponse();
 }
 
-void DoFetch() {
+bool DoFetch() {
     char city_name[sizeof(s_city_name)];
     strncpy(city_name, s_city_name, sizeof(city_name) - 1);
     city_name[sizeof(city_name) - 1] = '\0';
@@ -295,15 +357,22 @@ void DoFetch() {
     if (strcmp(provider, "qweather") == 0) {
         if (!qweather_host[0] || !qweather_credential[0]) {
             ESP_LOGW(kTag, "QWeather selected but Host or credential is missing");
-            return;
+            return false;
         }
         char url[384];
         snprintf(url, sizeof(url), "https://%s/weather/v1/current/%.2f/%.2f?lang=zh",
                  qweather_host, latitude, longitude);
-        if (!HttpGet(url, qweather_credential) ||
-            !ParseQWeatherCurrent(s_response_buf, &data)) {
+        if (!HttpGet(url, qweather_credential)) {
             ESP_LOGW(kTag, "Could not load QWeather current conditions");
-            return;
+            return false;
+        }
+        if (!ParseQWeatherCurrent(s_response_buf, &data)) {
+            ESP_LOGW(kTag, "QWeather current JSON not recognized (len=%d, prefix=%02x %02x %02x %02x)",
+                     s_response_len, static_cast<uint8_t>(s_response_buf[0]),
+                     static_cast<uint8_t>(s_response_buf[1]),
+                     static_cast<uint8_t>(s_response_buf[2]),
+                     static_cast<uint8_t>(s_response_buf[3]));
+            return false;
         }
         snprintf(url, sizeof(url), "https://%s/weather/v1/daily/%.2f/%.2f?days=4&localTime=true&lang=zh",
                  qweather_host, latitude, longitude);
@@ -317,7 +386,7 @@ void DoFetch() {
         snprintf(url, sizeof(url), kForecastUrl, latitude, longitude);
         if (!HttpGet(url) || !ParseWeather(s_response_buf, &data)) {
             ESP_LOGW(kTag, "Could not load Open-Meteo forecast");
-            return;
+            return false;
         }
         data.source = "Open-Meteo.com · CC BY 4.0";
     }
@@ -326,6 +395,7 @@ void DoFetch() {
     if (s_callback) s_callback(s_last_data);
     ESP_LOGI(kTag, "Weather updated for %s: %s C, %s",
              city_name, data.temp.c_str(), data.weather_text.c_str());
+    return true;
 }
 
 void ScheduleFetch() {
@@ -343,16 +413,17 @@ void WorkerTask(void*) {
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         s_in_progress = true;
-        DoFetch();
+        const bool success = DoFetch();
         s_in_progress = false;
 
         if (s_fetch_pending) {
             s_fetch_pending = false;
             ScheduleFetch();
         } else {
-            const esp_err_t result = esp_timer_start_once(s_timer, kRefreshIntervalUs);
+            const int64_t delay = success ? kRefreshIntervalUs : kRetryIntervalUs;
+            const esp_err_t result = esp_timer_start_once(s_timer, delay);
             if (result != ESP_OK) {
-                ESP_LOGW(kTag, "Could not schedule hourly refresh: %s", esp_err_to_name(result));
+                ESP_LOGW(kTag, "Could not schedule weather retry: %s", esp_err_to_name(result));
             }
         }
     }
