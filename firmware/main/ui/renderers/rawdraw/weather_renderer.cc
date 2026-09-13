@@ -114,7 +114,7 @@ const char* IconGlyphForCode(const std::string& icon_code, const std::string& we
     const int icon_cy = r.y + 30;
     DrawCircleBorder(fb, width, {icon_cx, icon_cy}, icon_circle_r, 1, BLACK);
     int icon_w = MeasureTextWidth(glyph, icon_font);
-    DrawIcon(fb, width, icon_cx - icon_w / 2, icon_cy - 8, glyph, icon_font, BLACK);
+    DrawIcon(fb, width, icon_cx - icon_w / 2, icon_cy - 8, glyph, icon_font, RED);
 
     char temp_buf[24];
     snprintf(temp_buf, sizeof(temp_buf), "%d~%d°", static_cast<int>(day.temp_min), static_cast<int>(day.temp_max));
@@ -165,7 +165,6 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
     const Color text = theme.ColorFor(ThemeToken::TextPrimary);
     const Color secondary = theme.ColorFor(ThemeToken::TextSecondary);
     const Color border = theme.ColorFor(ThemeToken::Border);
-    const Color accent = theme.ColorFor(ThemeToken::Accent);
 
     const int content_top = Style::kStatusBarHeight + 2;
     DrawStyledRect(fb, width, {0, Style::kStatusBarHeight, width, height - Style::kStatusBarHeight}, bg_style);
@@ -191,34 +190,30 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
         const std::string location_line = FitTextToWidth(location, title_font_, 170);
 
         // Screen regions are fixed and non-overlapping: header 30-52,
-        // current weather 57-139, metrics 147-202, forecast 212-278.
-        DrawCenteredTextInBox(fb, width, {16, 30, 180, 22}, location_line, title_font_, text);
-        const std::string source = current_data_.source.find("QWeather") != std::string::npos
-            ? "和风天气"
-            : (current_data_.source.empty() ? "天气数据" : "Open-Meteo · CC BY 4.0");
-        const std::string source_line = FitTextToWidth(source, font_, 150);
-        DrawCenteredTextInBox(fb, width, {226, 30, 158, 22}, source_line, font_, secondary);
+        // current weather 54-132, metrics 138-190, forecast 198-260,
+        // and a dedicated attribution footer 267-294.
+        DrawCenteredTextInBox(fb, width, {16, 30, width - 32, 22}, location_line, title_font_, text);
 
-        Rect hero{16, 57, width - 32, 82};
+        Rect hero{16, 54, width - 32, 78};
         DrawStyledRoundRect(fb, width, height, hero, Style::kBorderRadiusLG, card_style);
         char temp_buf[20];
         snprintf(temp_buf, sizeof(temp_buf), "%s°", current_data_.temp.empty() ? "--" : current_data_.temp.c_str());
-        DrawCenteredTextInBox(fb, width, {28, 66, 156, 40}, temp_buf, title_font_, text);
+        DrawCenteredTextInBox(fb, width, {28, 62, 156, 37}, temp_buf, title_font_, text);
         char feels_buf[32];
         snprintf(feels_buf, sizeof(feels_buf), "体感 %s°",
                  current_data_.feels_like.empty() ? (current_data_.temp.empty() ? "--" : current_data_.temp.c_str()) : current_data_.feels_like.c_str());
-        DrawCenteredTextInBox(fb, width, {28, 107, 156, 23}, feels_buf, font_, secondary);
+        DrawCenteredTextInBox(fb, width, {28, 100, 156, 23}, feels_buf, font_, secondary);
 
         const char* desc_glyph = IconGlyphForCode(current_data_.weather_icon, current_data_.weather_text);
         const int icon_w = MeasureTextWidth(desc_glyph, &weather_icons_48);
         DrawIcon(fb, width, 270 - icon_w / 2,
-                 InkCenteredTextTopY(&weather_icons_48, desc_glyph, 87, 0),
-                 desc_glyph, &weather_icons_48, accent);
+                 InkCenteredTextTopY(&weather_icons_48, desc_glyph, 82, 0),
+                 desc_glyph, &weather_icons_48, RED);
         const std::string desc = FitTextToWidth(current_data_.weather_text.empty() ? "天气 --" : current_data_.weather_text,
                                                 title_font_, 170);
-        DrawCenteredTextInBox(fb, width, {190, 111, 160, 22}, desc, title_font_, text);
+        DrawCenteredTextInBox(fb, width, {190, 101, 160, 22}, desc, title_font_, text);
 
-        Rect metrics{16, 147, width - 32, 55};
+        Rect metrics{16, 138, width - 32, 52};
         DrawStyledRoundRect(fb, width, height, metrics, Style::kBorderRadiusMD, panel_style);
         const int cell_w = metrics.w / 3;
         const char* labels[] = {"空气质量", "湿度", "风力 / 风向"};
@@ -247,7 +242,7 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
             page_index_ = forecast_count - 1;
         }
 
-        Rect forecast_panel{16, 212, width - 32, 66};
+        Rect forecast_panel{16, 198, width - 32, 62};
         DrawStyledRoundRect(fb, width, height, forecast_panel, Style::kBorderRadiusMD, panel_style);
         const int card_w = forecast_panel.w / 4;
         for (int i = 0; i < forecast_count && i < 4; ++i) {
@@ -258,19 +253,25 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
                     set_pixel(fb, width, x, y, border);
                 }
             }
-            DrawCenteredTextInBox(fb, width, {x + 3, forecast_panel.y + 3, card_w - 6, 17},
+            DrawCenteredTextInBox(fb, width, {x + 3, forecast_panel.y + 2, card_w - 6, 17},
                                   item.label, font_, secondary);
             const char* glyph = IconGlyphForCode(item.icon_code, item.weather_text);
-            const int icon_center_y = forecast_panel.y + 34;
+            const int icon_center_y = forecast_panel.y + 32;
             const int forecast_icon_w = MeasureTextWidth(glyph, &weather_icons_16);
             DrawIcon(fb, width, x + (card_w - forecast_icon_w) / 2, InkCenteredTextTopY(&weather_icons_16, glyph, icon_center_y, 0),
-                     glyph, &weather_icons_16, accent);
+                     glyph, &weather_icons_16, RED);
             char temp_range[24];
             snprintf(temp_range, sizeof(temp_range), "%d/%d°C", static_cast<int>(item.temp_min), static_cast<int>(item.temp_max));
             const std::string range = FitTextToWidth(temp_range, font_, card_w - 8);
-            DrawCenteredTextInBox(fb, width, {x + 3, forecast_panel.y + 45, card_w - 6, 17},
+            DrawCenteredTextInBox(fb, width, {x + 3, forecast_panel.y + 43, card_w - 6, 17},
                                   range, font_, text);
         }
+
+        DrawHLine(fb, width, 265, 18, width - 18, border);
+        const std::string attribution = current_data_.source.find("QWeather") != std::string::npos
+            ? "数据来源：和风天气"
+            : "来源：Open-Meteo · CC BY 4.0";
+        DrawCenteredTextInBox(fb, width, {16, 268, width - 32, 26}, attribution, font_, secondary);
     }
 
     needs_full_refresh_ = false;

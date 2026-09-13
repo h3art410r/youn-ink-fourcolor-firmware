@@ -69,7 +69,7 @@ void WeatherDetailRenderer::Render(uint8_t* fb, int width, int height) {
         modal.Draw(fb, width, height);
     } else {
         const char* glyph = IconGlyphForCode(data_.weather_icon, data_.weather_text);
-        DrawIcon(fb, width, 86, content_top + 38, glyph, icon_font_, accent);
+        DrawIcon(fb, width, 86, content_top + 38, glyph, icon_font_, RED);
         char temp_buf[20];
         snprintf(temp_buf, sizeof(temp_buf), "%s°C", data_.temp.empty() ? "--" : data_.temp.c_str());
         DrawText(fb, width, 170,
@@ -123,8 +123,7 @@ void WeatherDetailRenderer::Render(uint8_t* fb, int width, int height) {
 
                 const char* hour_glyph = IconGlyphForCode(point.icon_code, point.weather_text);
                 const int glyph_w = MeasureTextWidth(hour_glyph, icon_font_);
-                DrawIcon(fb, width, cx - glyph_w / 2, usable_y + 28, hour_glyph, icon_font_,
-                         i == selected_hour_ ? accent : text);
+                DrawIcon(fb, width, cx - glyph_w / 2, usable_y + 28, hour_glyph, icon_font_, RED);
 
                 char hour_temp[12];
                 snprintf(hour_temp, sizeof(hour_temp), "%d°C", static_cast<int>(point.temp));

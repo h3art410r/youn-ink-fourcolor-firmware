@@ -51,11 +51,11 @@ constexpr WeatherCity kWeatherCities[] = {
 
 std::string GetCarouselTitle(RawDrawPageId page) {
     const RawDrawPageId apps[] = {
-        RawDrawPageId::Gallery, RawDrawPageId::Weather, RawDrawPageId::Memo};
+        RawDrawPageId::Weather, RawDrawPageId::Memo};
     for (size_t i = 0; i < sizeof(apps) / sizeof(apps[0]); ++i) {
         if (apps[i] == page) {
             char title[32];
-            snprintf(title, sizeof(title), "%s %u/3",
+            snprintf(title, sizeof(title), "%s %u/2",
                      RawDrawUiManager::GetPageTitle(page),
                      static_cast<unsigned>(i + 1));
             return title;
@@ -252,7 +252,7 @@ RawDrawUiManager::RawDrawUiManager()
     : lcd_(nullptr)
     , width_(Style::kScreenWidth)
     , height_(Style::kScreenHeight)
-    , current_page_(RawDrawPageId::Gallery)
+    , current_page_(RawDrawPageId::Weather)
     , refresh_cb_(nullptr)
     , full_refresh_pending_(false)
     , clock_(rawdraw::kClockX, rawdraw::kClockY, &font_zectrix_16_1)
@@ -353,7 +353,7 @@ RawDrawUiManager::RawDrawUiManager()
     });
 
     // Initialize status bar defaults
-    status_bar_data_.page_title = GetCarouselTitle(RawDrawPageId::Gallery);
+    status_bar_data_.page_title = GetCarouselTitle(RawDrawPageId::Weather);
     status_bar_data_.wifi_connected = false;
     status_bar_data_.server_connected = false;
     status_bar_data_.battery_level = -1;
@@ -733,7 +733,7 @@ void RawDrawUiManager::StopApTransferMode() {
     if (ap_transfer_server_) {
         ap_transfer_server_->Stop();
     }
-    SwitchPage(RawDrawPageId::Gallery);
+    SwitchPage(RawDrawPageId::Weather);
 }
 
 void RawDrawUiManager::ShowWifiConfigPage(const std::string& ssid,
@@ -816,12 +816,11 @@ bool RawDrawUiManager::HandleInput(const rawdraw::ButtonEvent& event) {
         }
     }
 
-    if ((current_page_ == RawDrawPageId::Gallery || current_page_ == RawDrawPageId::Weather ||
-         current_page_ == RawDrawPageId::Memo) &&
+    if ((current_page_ == RawDrawPageId::Weather || current_page_ == RawDrawPageId::Memo) &&
         (event.type == rawdraw::ButtonEvent::kUpClick ||
          event.type == rawdraw::ButtonEvent::kDownClick)) {
         const RawDrawPageId apps[] = {
-            RawDrawPageId::Gallery, RawDrawPageId::Weather, RawDrawPageId::Memo};
+            RawDrawPageId::Weather, RawDrawPageId::Memo};
         size_t index = 0;
         while (index < sizeof(apps) / sizeof(apps[0]) && apps[index] != current_page_) ++index;
         if (index < sizeof(apps) / sizeof(apps[0])) {

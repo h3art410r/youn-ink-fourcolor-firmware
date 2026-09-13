@@ -100,8 +100,7 @@ void WeatherCard::DrawWeatherIcon(uint8_t* fb, int width, int x, int y, WeatherI
             icon_code = "\xef\x83\x9e";   // Default: sun
             break;
     }
-    DrawIcon(fb, width, x, y, icon_code, icon_font_,
-             ThemeManager::Get().ColorFor(ThemeToken::Accent));
+    DrawIcon(fb, width, x, y, icon_code, icon_font_, RED);
 }
 
 // ============================================================
