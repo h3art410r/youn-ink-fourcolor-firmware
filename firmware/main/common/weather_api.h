@@ -113,10 +113,9 @@ const WeatherData* weather_api_get_last_data();
 // Configure the active provider. Supported values: "open-meteo", "qweather".
 // QWeather credentials are stored per-device and are never returned by GET APIs.
 bool weather_api_set_provider(const char* provider, const char* api_host,
-                              const char* auth_type, const char* credential);
+                              const char* credential);
 void weather_api_get_provider(char* provider, size_t provider_size,
                               char* api_host, size_t api_host_size,
-                              char* auth_type, size_t auth_type_size,
                               bool* credential_configured);
 
 #endif  // WEATHER_API_H

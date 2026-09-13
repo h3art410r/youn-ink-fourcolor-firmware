@@ -49,6 +49,21 @@ constexpr WeatherCity kWeatherCities[] = {
     {"杭州", 30.2741, 120.1551},
 };
 
+std::string GetCarouselTitle(RawDrawPageId page) {
+    const RawDrawPageId apps[] = {
+        RawDrawPageId::Gallery, RawDrawPageId::Weather, RawDrawPageId::Memo};
+    for (size_t i = 0; i < sizeof(apps) / sizeof(apps[0]); ++i) {
+        if (apps[i] == page) {
+            char title[32];
+            snprintf(title, sizeof(title), "%s %u/3",
+                     RawDrawUiManager::GetPageTitle(page),
+                     static_cast<unsigned>(i + 1));
+            return title;
+        }
+    }
+    return RawDrawUiManager::GetPageTitle(page);
+}
+
 std::string FitTextToWidth(const std::string& text, const lv_font_t* font, int max_width) {
     if (!font || max_width <= 0 || text.empty()) return "";
     if (rawdraw::MeasureTextWidth(text.c_str(), font) <= max_width) return text;
@@ -213,6 +228,7 @@ const char* RawDrawUiManager::GetPageTitle(RawDrawPageId page) {
         case RawDrawPageId::Settings: return "设置";
         case RawDrawPageId::Gallery:  return "相册";
         case RawDrawPageId::Weather:  return "天气";
+        case RawDrawPageId::Memo:     return "备忘录";
         case RawDrawPageId::News:     return "热点";
         case RawDrawPageId::WeatherDetail: return "天气详情";
         case RawDrawPageId::PhotoDetail: return "照片详情";
@@ -250,6 +266,7 @@ RawDrawUiManager::RawDrawUiManager()
     photo_gallery_renderer_ = std::make_unique<rawdraw::PhotoGalleryRenderer>();
     photo_detail_renderer_ = std::make_unique<rawdraw::PhotoDetailRenderer>();
     weather_renderer_ = std::make_unique<rawdraw::WeatherRenderer>();
+    memo_renderer_ = std::make_unique<rawdraw::MemoRenderer>();
     weather_detail_renderer_ = std::make_unique<rawdraw::WeatherDetailRenderer>();
     news_renderer_ = std::make_unique<rawdraw::NewsRenderer>();
     lifebar_renderer_ = std::make_unique<rawdraw::LifeBarRenderer>();
@@ -326,12 +343,17 @@ RawDrawUiManager::RawDrawUiManager()
             photo_gallery_renderer_->RefreshPhotoList();
         }
     });
+    ap_transfer_server_->SetMemosChangedCallback([this]() {
+        if (!memo_renderer_) return;
+        memo_renderer_->Reload();
+        if (current_page_ == RawDrawPageId::Memo) RequestActivePageRefresh();
+    });
     ap_transfer_server_->SetShowPhotoCallback([this](const std::string& photo_id) {
         return ShowPhotoById(photo_id);
     });
 
     // Initialize status bar defaults
-    status_bar_data_.page_title = GetPageTitle(RawDrawPageId::Gallery);
+    status_bar_data_.page_title = GetCarouselTitle(RawDrawPageId::Gallery);
     status_bar_data_.wifi_connected = false;
     status_bar_data_.server_connected = false;
     status_bar_data_.battery_level = -1;
@@ -506,7 +528,7 @@ void RawDrawUiManager::SwitchPage(RawDrawPageId page) {
     // Update status bar title
     {
         std::lock_guard<std::mutex> lock(ui_state_mutex_);
-        status_bar_data_.page_title = GetPageTitle(page);
+        status_bar_data_.page_title = GetCarouselTitle(page);
     }
     // Full clear + re-render of the entire framebuffer
     auto* fb = lcd_ ? lcd_->GetFramebuffer() : nullptr;
@@ -540,6 +562,8 @@ void RawDrawUiManager::InitRenderer(RawDrawPageId page) {
             photo_gallery_renderer_->EnterFullscreenMode();
         } else if (page == RawDrawPageId::Weather && weather_renderer_) {
             weather_renderer_->SetCityName(kWeatherCities[weather_city_index_].name);
+        } else if (page == RawDrawPageId::Memo && memo_renderer_) {
+            memo_renderer_->Reload();
         }
     }
 }
@@ -555,7 +579,7 @@ void RawDrawUiManager::SetCurrentPageWithoutRender(RawDrawPageId page) {
     // Update status bar title
     {
         std::lock_guard<std::mutex> lock(ui_state_mutex_);
-        status_bar_data_.page_title = GetPageTitle(page);
+        status_bar_data_.page_title = GetCarouselTitle(page);
     }
 }
 
@@ -567,6 +591,7 @@ rawdraw::PageRenderer* RawDrawUiManager::GetRendererForPage(RawDrawPageId page) 
         case RawDrawPageId::Settings: return settings_renderer_.get();
         case RawDrawPageId::Gallery:  return photo_gallery_renderer_.get();
         case RawDrawPageId::Weather:  return weather_renderer_.get();
+        case RawDrawPageId::Memo:     return memo_renderer_.get();
         case RawDrawPageId::News:     return news_renderer_.get();
         case RawDrawPageId::WeatherDetail: return weather_detail_renderer_.get();
         case RawDrawPageId::PhotoDetail: return photo_detail_renderer_.get();
@@ -668,10 +693,11 @@ bool RawDrawUiManager::TryDisplayCurrentPhotoRaw4Color() {
     return shown;
 }
 
-const std::array<RawDrawUiManager::QuickSwitchItem, 12>& RawDrawUiManager::GetQuickSwitchItems() {
-    static const std::array<QuickSwitchItem, 12> kItems = {{
+const std::array<RawDrawUiManager::QuickSwitchItem, 13>& RawDrawUiManager::GetQuickSwitchItems() {
+    static const std::array<QuickSwitchItem, 13> kItems = {{
         {RawDrawPageId::Gallery, "相册", FA_SETTINGS_IMAGE},
         {RawDrawPageId::Weather, "天气", FA_SETTINGS_WIFI},
+        {RawDrawPageId::Memo, "备忘录", FA_SETTINGS_COMMENT},
         {RawDrawPageId::News, "每日热点", FA_SETTINGS_NEWSPAPER},
         {RawDrawPageId::Calendar, "日历", FA_SETTINGS_CALENDAR},
         {RawDrawPageId::Ebook, "电子书", FA_SETTINGS_BOOK},
@@ -790,12 +816,21 @@ bool RawDrawUiManager::HandleInput(const rawdraw::ButtonEvent& event) {
         }
     }
 
-    if ((current_page_ == RawDrawPageId::Gallery || current_page_ == RawDrawPageId::Weather) &&
+    if ((current_page_ == RawDrawPageId::Gallery || current_page_ == RawDrawPageId::Weather ||
+         current_page_ == RawDrawPageId::Memo) &&
         (event.type == rawdraw::ButtonEvent::kUpClick ||
          event.type == rawdraw::ButtonEvent::kDownClick)) {
-        SwitchPage(current_page_ == RawDrawPageId::Gallery
-                       ? RawDrawPageId::Weather
-                       : RawDrawPageId::Gallery);
+        const RawDrawPageId apps[] = {
+            RawDrawPageId::Gallery, RawDrawPageId::Weather, RawDrawPageId::Memo};
+        size_t index = 0;
+        while (index < sizeof(apps) / sizeof(apps[0]) && apps[index] != current_page_) ++index;
+        if (index < sizeof(apps) / sizeof(apps[0])) {
+            const size_t app_count = sizeof(apps) / sizeof(apps[0]);
+            index = event.type == rawdraw::ButtonEvent::kDownClick
+                ? (index + 1) % app_count
+                : (index + app_count - 1) % app_count;
+            SwitchPage(apps[index]);
+        }
         return true;
     }
 
@@ -818,6 +853,12 @@ bool RawDrawUiManager::HandleInput(const rawdraw::ButtonEvent& event) {
         } else {
             RefreshActivePage(false);
         }
+        return true;
+    }
+
+    if (event.type == rawdraw::ButtonEvent::kBootClick &&
+        current_page_ == RawDrawPageId::Memo && memo_renderer_) {
+        if (memo_renderer_->Advance()) RefreshActivePage(false);
         return true;
     }
 

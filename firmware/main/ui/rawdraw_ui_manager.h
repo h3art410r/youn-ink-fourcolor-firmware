@@ -20,6 +20,7 @@
 #include "ui/renderers/rawdraw/photo_gallery.h"
 #include "ui/renderers/rawdraw/photo_detail_renderer.h"
 #include "ui/renderers/rawdraw/weather_renderer.h"
+#include "ui/renderers/rawdraw/memo_renderer.h"
 #include "ui/renderers/rawdraw/weather_detail_renderer.h"
 #include "ui/renderers/rawdraw/news_renderer.h"
 #include "ui/renderers/rawdraw/lifebar_renderer.h"
@@ -76,6 +77,7 @@ enum class RawDrawPageId {
     FontDebug = 15,
     FontMetrics = 16,
     APTransfer = 17,
+    Memo = 18,
     Count,
 };
 
@@ -441,6 +443,7 @@ private:
     std::unique_ptr<rawdraw::PhotoGalleryRenderer> photo_gallery_renderer_;
     std::unique_ptr<rawdraw::PhotoDetailRenderer> photo_detail_renderer_;
     std::unique_ptr<rawdraw::WeatherRenderer> weather_renderer_;
+    std::unique_ptr<rawdraw::MemoRenderer> memo_renderer_;
     std::unique_ptr<rawdraw::WeatherDetailRenderer> weather_detail_renderer_;
     std::unique_ptr<rawdraw::NewsRenderer> news_renderer_;
     std::unique_ptr<rawdraw::LifeBarRenderer> lifebar_renderer_;
@@ -504,7 +507,7 @@ private:
     void RestoreQuickSwitchBacking(uint8_t* fb);
     void RedrawQuickSwitchOnly(uint8_t* fb);
     void RefreshRect(const rawdraw::Rect& rect, bool urgent = false);
-    static const std::array<QuickSwitchItem, 12>& GetQuickSwitchItems();
+    static const std::array<QuickSwitchItem, 13>& GetQuickSwitchItems();
     void MarkAllRenderersFullRefresh();
 };
 

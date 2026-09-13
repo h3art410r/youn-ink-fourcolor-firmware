@@ -401,7 +401,7 @@ void PhotoGalleryRenderer::RenderMemoryCardMode(uint8_t* fb, int width, int heig
         RenderPhotoInRect(fb, width, PhotoEntry{}, photo_x, card_y, photo_w, card_h, false);
         FooterBar footer;
         footer.SetBounds(width, height);
-        footer.SetText("UP上一张", nullptr, "BOOT看详情");
+        footer.SetText("上下切应用", nullptr, "BOOT下一张");
         footer.Draw(fb, width, height);
         return;
     }
@@ -462,7 +462,7 @@ void PhotoGalleryRenderer::RenderMemoryCardMode(uint8_t* fb, int width, int heig
     footer.SetBounds(width, height);
     char counter[40];
     snprintf(counter, sizeof(counter), "%d/%d", selected_index_ + 1, GetPhotoCount());
-    footer.SetText("UP/DN翻页", counter, "BOOT看详情");
+    footer.SetText("上下切应用", counter, "BOOT下一张");
     footer.Draw(fb, width, height);
 }
 

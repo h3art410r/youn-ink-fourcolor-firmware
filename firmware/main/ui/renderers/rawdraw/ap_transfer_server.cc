@@ -6,6 +6,7 @@
 #include "ap_transfer_server.h"
 #include "boards/zectrix-s3-epaper-4.2/config.h"
 #include "common/photo_storage.h"
+#include "common/memo_storage.h"
 #include "common/weather_api.h"
 #include "settings.h"
 #include "wifi_manager.h"
@@ -60,6 +61,7 @@ const char kUploadHtml[] = R"HTML(
 <section class="panel split"><div><div class="title">发送图片</div><p class="muted">先选择图片，预览转换效果，再发送到设备。</p><div class="row"><label class="radio"><input name="fmt" type="radio" value="1bpp" checked>1 BP 黑白</label><label class="radio"><input name="fmt" type="radio" value="bwry2bpp">2 BP 四色</label></div><div class="row" style="margin-top:8px"><button class="btn yellow" id="pick">选择图片</button><button class="btn" id="send" disabled>发送</button></div><input class="file" id="file" type="file" accept="image/*"><div class="status" id="status">等待选择</div></div><div><canvas class="preview" id="preview" width="400" height="300"></canvas></div></section>
 <section class="panel" id="settingsPanel" style="display:none"><div class="bar"><b>相册轮播周期</b><span class="muted" id="settingsState"></span></div><div class="row"><label class="radio"><input name="slide" type="radio" value="0">关闭</label><label class="radio"><input name="slide" type="radio" value="5">5min</label><label class="radio"><input name="slide" type="radio" value="10">10min</label><label class="radio"><input name="slide" type="radio" value="30">30min</label><button class="btn yellow" id="saveSettings">保存设置</button><button class="btn secondary" id="stopService">关闭服务</button><button class="btn danger" id="sleepNow">关闭并省电</button></div></section>
 <section class="panel" id="weatherSettings"><div class="bar"><b>天气数据源</b><span class="muted" id="weatherState">读取配置...</span></div><div class="row"><label>当前来源 <select id="weatherProvider" style="padding:7px;border:1px solid #111"><option value="open-meteo">Open-Meteo（免 token）</option><option value="qweather">和风天气</option></select></label><label>和风 API Host <input id="qweatherHost" placeholder="你的专属 Host，例如 abc.qweatherapi.com" style="width:220px;padding:7px;border:1px solid #111"></label><label>和风 API Key <input id="qweatherCredential" type="password" autocomplete="new-password" placeholder="留空则保留已保存 API Key" style="width:220px;padding:7px;border:1px solid #111"></label><button class="btn yellow" id="saveWeather">保存并切换</button></div><div class="muted" style="margin-top:6px">和风 API Key 保存在设备本地；页面不会回显。Open‑Meteo 无需凭证。本页为局域网 HTTP，请只在可信网络使用。</div></section>
+<section class="panel" id="memoPanel"><div class="bar"><div><b>备忘录</b> <span class="muted" id="memoState"></span></div><button class="btn secondary" id="newMemo">新建</button></div><div class="row"><input id="memoTitle" maxlength="20" placeholder="标题（最多 20 字）" style="flex:1;min-width:180px;padding:8px;border:1px solid #111"><button class="btn yellow" id="saveMemo">添加备忘</button></div><textarea id="memoBody" maxlength="50" rows="3" placeholder="正文（最多 50 字）" style="width:100%;margin-top:7px;padding:8px;border:1px solid #111"></textarea><div class="muted" style="margin:5px 0">最多保存 8 条；调整列表顺序会改变设备上 BOOT 浏览的顺序。</div><div id="memosList" class="grid"></div></section>
 <section class="panel"><div class="bar"><div><b>设备图片</b> <span class="muted" id="count"></span></div><div class="row"><button class="btn secondary" id="reload">刷新</button><button class="btn danger" id="batch" disabled>删除选中</button></div></div><div id="photos" class="grid"><div class="empty">读取中...</div></div></section>
 </main>
 <div class="modal" id="modal"><div class="dialog"><button class="close" id="close">×</button><canvas class="big" id="big" width="400" height="300"></canvas><div class="meta"><input id="mTitle" style="width:100%;padding:7px;border:1px solid #111;font-weight:800"><div class="row" style="margin-top:6px"><input id="mDate" placeholder="日期" style="flex:1;padding:7px;border:1px solid #111"><input id="mLocation" placeholder="地点" style="flex:1;padding:7px;border:1px solid #111"></div><textarea id="mBody" rows="3" style="width:100%;margin-top:6px;padding:7px;border:1px solid #111"></textarea><div class="muted" id="mMeta" style="margin-top:5px"></div><div class="row" style="margin-top:8px"><button class="btn yellow" id="mSave">保存信息</button><button class="btn secondary" id="mUp">上移</button><button class="btn secondary" id="mDown">下移</button><button class="btn danger" id="mDelete">删除这张</button></div></div></div></div>
@@ -91,7 +93,17 @@ document.getElementById('helpBtn').onclick=()=>{const p=document.getElementById(
 async function loadSettings(){try{const j=await (await fetch('/settings')).json();document.querySelectorAll('input[name=slide]').forEach(r=>r.checked=Number(r.value)===j.slideshow_interval);const slide=j.slideshow_interval?`轮播 ${j.slideshow_interval}min`:'轮播关闭';const svc=j.service_running?`服务开启 ${j.url||''}`:'服务将关闭';settingsState.textContent=`${slide} · ${svc}`}catch(e){settingsState.textContent='读取失败'}}
 const weatherState=document.getElementById('weatherState');
 async function loadWeatherSettings(){try{const j=await (await fetch('/settings')).json();document.getElementById('weatherProvider').value=j.weather_provider||'open-meteo';document.getElementById('qweatherHost').value=j.qweather_host||'';weatherState.textContent=`和风 API Key ${j.qweather_credential_configured?'已保存':'未配置'}`}catch(e){weatherState.textContent='读取失败'}}
-document.getElementById('saveWeather').onclick=async()=>{const body={weather_provider:document.getElementById('weatherProvider').value,qweather_host:document.getElementById('qweatherHost').value.trim(),qweather_auth:'api_key',qweather_credential:document.getElementById('qweatherCredential').value};const j=await (await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();document.getElementById('qweatherCredential').value='';weatherState.textContent=j.success?`已切换；和风 API Key ${j.qweather_credential_configured?'已保存':'未配置'}`:(j.error==='qweather_config_required'?'请检查和风天气的 Host 和 API Key':(j.error||'保存失败'));}
+document.getElementById('saveWeather').onclick=async()=>{const body={weather_provider:document.getElementById('weatherProvider').value,qweather_host:document.getElementById('qweatherHost').value.trim(),qweather_credential:document.getElementById('qweatherCredential').value};const j=await (await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})).json();document.getElementById('qweatherCredential').value='';weatherState.textContent=j.success?`已切换；和风 API Key ${j.qweather_credential_configured?'已保存':'未配置'}`:(j.error==='qweather_config_required'?'请检查和风天气的 Host 和 API Key':(j.error||'保存失败'));}
+let memos=[],editingMemo=-1;const memoTitle=document.getElementById('memoTitle'),memoBody=document.getElementById('memoBody'),memoState=document.getElementById('memoState'),memosList=document.getElementById('memosList');
+async function loadMemos(){try{const j=await (await fetch('/memos',{cache:'no-store'})).json();memos=j.memos||[];renderMemos()}catch(e){memoState.textContent='读取失败'}}
+function renderMemos(){memosList.replaceChildren();memoState.textContent=`${memos.length}/8 条`;memos.forEach((m,i)=>{const card=document.createElement('div');card.className='card';card.style.padding='8px';const title=document.createElement('b');title.textContent=m.title;const body=document.createElement('div');body.className='body';body.style.height='auto';body.style.minHeight='30px';body.textContent=m.body;const row=document.createElement('div');row.className='row';row.style.marginTop='6px';[['编辑',()=>editMemo(i)],['上移',()=>moveMemo(i,-1)],['下移',()=>moveMemo(i,1)],['删除',()=>deleteMemo(i)]].forEach(([label,fn])=>{const b=document.createElement('button');b.className='btn secondary';b.textContent=label;b.onclick=fn;row.appendChild(b)});card.append(title,body,row);memosList.appendChild(card)})}
+function resetMemoForm(){editingMemo=-1;memoTitle.value='';memoBody.value='';document.getElementById('saveMemo').textContent='添加备忘'}
+function editMemo(i){editingMemo=i;memoTitle.value=memos[i].title;memoBody.value=memos[i].body;document.getElementById('saveMemo').textContent='保存修改';memoTitle.focus()}
+async function saveMemoList(){const r=await fetch('/memos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({memos})});const j=await r.json();if(!j.success)throw Error(j.error||'保存失败');renderMemos()}
+document.getElementById('saveMemo').onclick=async()=>{const title=memoTitle.value.trim(),body=memoBody.value.trim();if(!title){memoState.textContent='请填写标题';return}if(!body){memoState.textContent='请填写正文';return}const item={title,body};if(editingMemo<0){if(memos.length>=8){memoState.textContent='最多保存 8 条';return}memos.push(item)}else memos[editingMemo]=item;try{await saveMemoList();resetMemoForm()}catch(e){memoState.textContent='保存失败'}};
+function moveMemo(i,d){const j=i+d;if(j<0||j>=memos.length)return;[memos[i],memos[j]]=[memos[j],memos[i]];saveMemoList().catch(()=>{memoState.textContent='排序保存失败'})}
+async function deleteMemo(i){if(!confirm('删除这条备忘？'))return;memos.splice(i,1);try{await saveMemoList();if(editingMemo===i)resetMemoForm()}catch(e){memoState.textContent='删除失败'}}
+document.getElementById('newMemo').onclick=resetMemoForm;loadMemos();
 document.getElementById('saveSettings').onclick=async()=>{const v=Number(document.querySelector('input[name=slide]:checked')?.value||0);const j=await (await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slideshow_interval:v})})).json();settingsState.textContent=j.success?(v?`已保存 ${v}min`:'已关闭'):'保存失败'};
 document.getElementById('stopService').onclick=async()=>{if(!confirm('关闭本地传图服务？'))return;await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({service_enabled:false})});settingsState.textContent='服务正在关闭'};
 document.getElementById('sleepNow').onclick=async()=>{if(!confirm('关闭服务、WiFi 并进入省电模式？'))return;await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({service_enabled:false,wifi_enabled:false,sleep:true})});settingsState.textContent='设备正在进入省电模式'};
@@ -100,7 +112,7 @@ batchBtn.onclick=async()=>{const ids=[...selected];if(!ids.length)return;if(!con
 )HTML";
 
 cJSON* ReadJsonBody(httpd_req_t* req) {
-    if (!req || req->content_len == 0 || req->content_len > 2048) return nullptr;
+    if (!req || req->content_len == 0 || req->content_len > 4096) return nullptr;
     char* buf = static_cast<char*>(calloc(1, req->content_len + 1));
     if (!buf) return nullptr;
     size_t received = 0;
@@ -443,7 +455,8 @@ bool ApTransferServer::StartAccessPoint() {
 
 bool ApTransferServer::StartHttpServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 16;
+    config.stack_size = 8192;
     config.max_open_sockets = 4;
     config.recv_wait_timeout = 30;  // Large images take time
     config.send_wait_timeout = 10;
@@ -504,6 +517,22 @@ bool ApTransferServer::StartHttpServer() {
         .user_ctx = this
     };
     if (httpd_register_uri_handler(server_, &photos_uri) != ESP_OK) return false;
+
+    httpd_uri_t memos_get_uri = {
+        .uri = "/memos",
+        .method = HTTP_GET,
+        .handler = MemosHandler,
+        .user_ctx = this
+    };
+    if (httpd_register_uri_handler(server_, &memos_get_uri) != ESP_OK) return false;
+
+    httpd_uri_t memos_post_uri = {
+        .uri = "/memos",
+        .method = HTTP_POST,
+        .handler = MemosHandler,
+        .user_ctx = this
+    };
+    if (httpd_register_uri_handler(server_, &memos_post_uri) != ESP_OK) return false;
 
     httpd_uri_t photo_get_uri = {
         .uri = "/photo",
@@ -691,12 +720,10 @@ esp_err_t ApTransferServer::SettingsHandler(httpd_req_t* req) {
         cJSON* provider_item = cJSON_GetObjectItemCaseSensitive(root, "weather_provider");
         if (cJSON_IsString(provider_item) && provider_item->valuestring) {
             char host[128] = {};
-            char auth[16] = {};
             char credential[384] = {};
             CopyJsonString(root, "qweather_host", host, sizeof(host));
-            CopyJsonString(root, "qweather_auth", auth, sizeof(auth));
             CopyJsonString(root, "qweather_credential", credential, sizeof(credential));
-            if (!weather_api_set_provider(provider_item->valuestring, host, auth, credential)) {
+            if (!weather_api_set_provider(provider_item->valuestring, host, credential)) {
                 cJSON_Delete(root);
                 SendJson(req, "{\"success\":false,\"error\":\"qweather_config_required\"}");
                 return ESP_OK;
@@ -739,11 +766,9 @@ esp_err_t ApTransferServer::SettingsHandler(httpd_req_t* req) {
     }
     char weather_provider[16] = {};
     char qweather_host[128] = {};
-    char qweather_auth[16] = {};
     bool credential_configured = false;
     weather_api_get_provider(weather_provider, sizeof(weather_provider),
                              qweather_host, sizeof(qweather_host),
-                             qweather_auth, sizeof(qweather_auth),
                              &credential_configured);
     cJSON* response = cJSON_CreateObject();
     cJSON_AddBoolToObject(response, "success", true);
@@ -758,7 +783,6 @@ esp_err_t ApTransferServer::SettingsHandler(httpd_req_t* req) {
     cJSON_AddBoolToObject(response, "sleep", enter_sleep);
     cJSON_AddStringToObject(response, "weather_provider", weather_provider);
     cJSON_AddStringToObject(response, "qweather_host", qweather_host);
-    cJSON_AddStringToObject(response, "qweather_auth", qweather_auth);
     cJSON_AddBoolToObject(response, "qweather_credential_configured", credential_configured);
     char* response_text = cJSON_PrintUnformatted(response);
     if (response_text) SendJson(req, response_text);
@@ -815,6 +839,87 @@ esp_err_t ApTransferServer::PhotosHandler(httpd_req_t* req) {
     CloseCurrentSession(req);
     cJSON_free(json);
     return ret;
+}
+
+esp_err_t ApTransferServer::MemosHandler(httpd_req_t* req) {
+    auto* self = static_cast<ApTransferServer*>(req->user_ctx);
+    if (req->method == HTTP_POST) {
+        ESP_LOGI(kTag, "Memo update request received (%u bytes)", static_cast<unsigned>(req->content_len));
+        cJSON* root = ReadJsonBody(req);
+        cJSON* entries = root ? cJSON_GetObjectItemCaseSensitive(root, "memos") : nullptr;
+        if (!cJSON_IsArray(entries) || cJSON_GetArraySize(entries) < 0 ||
+            cJSON_GetArraySize(entries) > static_cast<int>(MEMO_MAX_ITEMS)) {
+            cJSON_Delete(root);
+            SendJson(req, "{\"success\":false,\"error\":\"invalid_memos\"}");
+            return ESP_OK;
+        }
+
+        MemoItem items[MEMO_MAX_ITEMS] = {};
+        const int count = cJSON_GetArraySize(entries);
+        bool valid = true;
+        for (int i = 0; i < count; ++i) {
+            const cJSON* item = cJSON_GetArrayItem(entries, i);
+            const cJSON* title = cJSON_GetObjectItemCaseSensitive(item, "title");
+            const cJSON* body = cJSON_GetObjectItemCaseSensitive(item, "body");
+            if (!cJSON_IsString(title) || !title->valuestring || !title->valuestring[0] ||
+                !cJSON_IsString(body) || !body->valuestring ||
+                strlen(title->valuestring) >= sizeof(items[i].title) ||
+                strlen(body->valuestring) >= sizeof(items[i].body)) {
+                valid = false;
+                break;
+            }
+            strlcpy(items[i].title, title->valuestring, sizeof(items[i].title));
+            strlcpy(items[i].body, body->valuestring, sizeof(items[i].body));
+        }
+        const bool saved = valid && memo_storage_replace(items, static_cast<size_t>(count));
+        ESP_LOGI(kTag, "Memo update parsed: count=%d valid=%d saved=%d",
+                 count, valid ? 1 : 0, saved ? 1 : 0);
+        cJSON_Delete(root);
+        if (saved && self && self->memos_changed_callback_) {
+            self->memos_changed_callback_();
+        }
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Connection", "close");
+        const char* response = saved ? "{\"success\":true}" : "{\"success\":false,\"error\":\"invalid_memos\"}";
+        const esp_err_t sent = httpd_resp_sendstr(req, response);
+        ESP_LOGI(kTag, "Memo update response sent: %s", esp_err_to_name(sent));
+        return sent;
+    }
+
+    MemoItem items[MEMO_MAX_ITEMS] = {};
+    size_t count = 0;
+    if (!memo_storage_get_all(items, MEMO_MAX_ITEMS, &count)) {
+        SendJson(req, "{\"success\":false,\"error\":\"memo_storage_error\"}");
+        return ESP_OK;
+    }
+    cJSON* root = cJSON_CreateObject();
+    cJSON* entries = cJSON_CreateArray();
+    if (!root || !entries) {
+        cJSON_Delete(root);
+        cJSON_Delete(entries);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No memory");
+        return ESP_FAIL;
+    }
+    cJSON_AddItemToObject(root, "memos", entries);
+    for (size_t i = 0; i < count; ++i) {
+        cJSON* item = cJSON_CreateObject();
+        if (!item) continue;
+        cJSON_AddStringToObject(item, "title", items[i].title);
+        cJSON_AddStringToObject(item, "body", items[i].body);
+        cJSON_AddItemToArray(entries, item);
+    }
+    char* json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No memory");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Connection", "close");
+    const esp_err_t result = httpd_resp_sendstr(req, json);
+    cJSON_free(json);
+    CloseCurrentSession(req);
+    return result;
 }
 
 esp_err_t ApTransferServer::PhotoHandler(httpd_req_t* req) {
@@ -969,6 +1074,10 @@ void ApTransferServer::SetSettingsChangedCallback(std::function<void(int)> callb
 
 void ApTransferServer::SetPhotosChangedCallback(std::function<void()> callback) {
     photos_changed_callback_ = callback;
+}
+
+void ApTransferServer::SetMemosChangedCallback(std::function<void()> callback) {
+    memos_changed_callback_ = std::move(callback);
 }
 
 void ApTransferServer::SetShowPhotoCallback(std::function<bool(const std::string&)> callback) {

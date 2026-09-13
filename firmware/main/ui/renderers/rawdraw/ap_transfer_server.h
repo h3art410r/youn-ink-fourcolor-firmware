@@ -62,6 +62,7 @@ public:
 
     void SetSettingsChangedCallback(std::function<void(int slideshow_interval_minutes)> callback);
     void SetPhotosChangedCallback(std::function<void()> callback);
+    void SetMemosChangedCallback(std::function<void()> callback);
     void SetShowPhotoCallback(std::function<bool(const std::string& photo_id)> callback);
 
 private:
@@ -83,6 +84,7 @@ private:
     std::function<void(const char* photo_id)> image_received_callback_;
     std::function<void(int slideshow_interval_minutes)> settings_changed_callback_;
     std::function<void()> photos_changed_callback_;
+    std::function<void()> memos_changed_callback_;
     std::function<bool(const std::string& photo_id)> show_photo_callback_;
 
     bool StartAccessPoint();
@@ -96,6 +98,7 @@ private:
     static esp_err_t StatusHandler(httpd_req_t* req);
     static esp_err_t SettingsHandler(httpd_req_t* req);
     static esp_err_t PhotosHandler(httpd_req_t* req);
+    static esp_err_t MemosHandler(httpd_req_t* req);
     static esp_err_t PhotoHandler(httpd_req_t* req);
     static esp_err_t PhotoMetaHandler(httpd_req_t* req);
     static esp_err_t PhotoMoveHandler(httpd_req_t* req);

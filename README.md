@@ -142,7 +142,7 @@ ZECTRIX_EPD_PANEL_1BPP            黑白 1bpp 屏
 
 ## UI 说明
 
-固件包含多个 RawDraw 页面渲染器，但已有页面代码不代表相应业务数据源都已接通。NOTE4C 两应用原型先开放相册和天气：启动进入相册，上/下键在相册与天气间切换，BOOT 在相册切换下一张图片、在天气切换上海/杭州。天气使用免 Key 的 [Open-Meteo Forecast API](https://open-meteo.com/en/docs)；免费接口限非商业用途，天气数据按 [CC BY 4.0](https://open-meteo.com/en/license) 标注来源。更多页面待两应用链路验证后再接入。
+固件包含多个 RawDraw 页面渲染器，但已有页面代码不代表相应业务数据源都已接通。NOTE4C 首版三应用轮播为相册、天气、备忘录：启动进入相册，上/下键切换应用，页面标题显示当前序号（1/3、2/3、3/3）；BOOT 在相册切换图片、天气切换上海/杭州、备忘录切换条目。天气默认使用免 Key 的 [Open-Meteo Forecast API](https://open-meteo.com/en/docs)；免费接口限非商业用途，天气数据按 [CC BY 4.0](https://open-meteo.com/en/license) 标注来源。
 
 四色屏主题层通过语义样式绘制组件，不建议在业务页面里继续新增裸 `RED/YELLOW/BLACK/WHITE`。新增 UI 时优先使用 RawDraw 组件和 theme token。
 

@@ -26,7 +26,6 @@ constexpr char kForecastUrl[] =
 char s_city_name[32] = {};
 char s_provider[16] = "open-meteo";
 char s_qweather_host[128] = {};
-char s_qweather_auth_type[16] = "api_key";
 char s_qweather_credential[384] = {};
 double s_latitude = 0;
 double s_longitude = 0;
@@ -252,7 +251,7 @@ esp_err_t HttpEventHandler(esp_http_client_event_t* event) {
     return ESP_OK;
 }
 
-bool HttpGet(const char* url, const char* auth_type = nullptr, const char* credential = nullptr) {
+bool HttpGet(const char* url, const char* credential = nullptr) {
     s_response_len = 0;
     memset(s_response_buf, 0, sizeof(s_response_buf));
     esp_http_client_config_t config = {};
@@ -264,7 +263,7 @@ bool HttpGet(const char* url, const char* auth_type = nullptr, const char* crede
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) return false;
-    if (auth_type && credential && credential[0]) {
+    if (credential && credential[0]) {
         esp_http_client_set_header(client, "X-QW-Api-Key", credential);
     }
     const esp_err_t result = esp_http_client_perform(client);
@@ -285,11 +284,9 @@ void DoFetch() {
     city_name[sizeof(city_name) - 1] = '\0';
     char provider[sizeof(s_provider)];
     char qweather_host[sizeof(s_qweather_host)];
-    char qweather_auth_type[sizeof(s_qweather_auth_type)];
     char qweather_credential[sizeof(s_qweather_credential)];
     strlcpy(provider, s_provider, sizeof(provider));
     strlcpy(qweather_host, s_qweather_host, sizeof(qweather_host));
-    strlcpy(qweather_auth_type, s_qweather_auth_type, sizeof(qweather_auth_type));
     strlcpy(qweather_credential, s_qweather_credential, sizeof(qweather_credential));
     const double latitude = s_latitude;
     const double longitude = s_longitude;
@@ -303,14 +300,14 @@ void DoFetch() {
         char url[384];
         snprintf(url, sizeof(url), "https://%s/weather/v1/current/%.2f/%.2f?lang=zh",
                  qweather_host, latitude, longitude);
-        if (!HttpGet(url, qweather_auth_type, qweather_credential) ||
+        if (!HttpGet(url, qweather_credential) ||
             !ParseQWeatherCurrent(s_response_buf, &data)) {
             ESP_LOGW(kTag, "Could not load QWeather current conditions");
             return;
         }
         snprintf(url, sizeof(url), "https://%s/weather/v1/daily/%.2f/%.2f?days=4&localTime=true&lang=zh",
                  qweather_host, latitude, longitude);
-        if (!HttpGet(url, qweather_auth_type, qweather_credential) ||
+        if (!HttpGet(url, qweather_credential) ||
             !ParseQWeatherDaily(s_response_buf, &data)) {
             ESP_LOGW(kTag, "Could not load QWeather daily forecast");
         }
@@ -385,17 +382,17 @@ void weather_api_init(const char* city_name, double latitude, double longitude,
     s_latitude = latitude;
     s_longitude = longitude;
     s_callback = std::move(callback);
-    Settings config("weather_api");
+    Settings config("weather_api", true);
     strlcpy(s_provider, config.GetString("provider", "open-meteo").c_str(), sizeof(s_provider));
     strlcpy(s_qweather_host, config.GetString("qw_host", "").c_str(), sizeof(s_qweather_host));
     const std::string saved_auth = config.GetString("qw_auth", "api_key");
     strlcpy(s_qweather_credential, config.GetString("qw_credential", "").c_str(), sizeof(s_qweather_credential));
-    strlcpy(s_qweather_auth_type, "api_key", sizeof(s_qweather_auth_type));
     if (saved_auth == "jwt") {
         // A stored bearer JWT must never be sent as an API key after simplifying this build.
         s_qweather_credential[0] = '\0';
         config.EraseKey("qw_credential");
     }
+    config.SetString("qw_auth", "api_key");
 
     if (xTaskCreate(WorkerTask, "weather_fetch", 16 * 1024, nullptr, 3,
                     &s_worker_task) != pdPASS) {
@@ -442,7 +439,7 @@ const WeatherData* weather_api_get_last_data() {
 }
 
 bool weather_api_set_provider(const char* provider, const char* api_host,
-                              const char* auth_type, const char* credential) {
+                              const char* credential) {
     if (!provider || (strcmp(provider, "open-meteo") != 0 && strcmp(provider, "qweather") != 0)) return false;
     const char* next_host = api_host && api_host[0] ? api_host : s_qweather_host;
     const char* next_credential = credential && credential[0] ? credential : s_qweather_credential;
@@ -457,8 +454,6 @@ bool weather_api_set_provider(const char* provider, const char* api_host,
         strlcpy(s_qweather_host, api_host, sizeof(s_qweather_host));
         config.SetString("qw_host", s_qweather_host);
     }
-    strlcpy(s_qweather_auth_type, "api_key", sizeof(s_qweather_auth_type));
-    config.SetString("qw_auth", s_qweather_auth_type);
     if (credential && credential[0]) {
         strlcpy(s_qweather_credential, credential, sizeof(s_qweather_credential));
         config.SetString("qw_credential", s_qweather_credential);
@@ -469,10 +464,8 @@ bool weather_api_set_provider(const char* provider, const char* api_host,
 
 void weather_api_get_provider(char* provider, size_t provider_size,
                               char* api_host, size_t api_host_size,
-                              char* auth_type, size_t auth_type_size,
                               bool* credential_configured) {
     if (provider && provider_size) strlcpy(provider, s_provider, provider_size);
     if (api_host && api_host_size) strlcpy(api_host, s_qweather_host, api_host_size);
-    if (auth_type && auth_type_size) strlcpy(auth_type, s_qweather_auth_type, auth_type_size);
     if (credential_configured) *credential_configured = s_qweather_credential[0] != '\0';
 }
