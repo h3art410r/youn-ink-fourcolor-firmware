@@ -272,6 +272,36 @@ bool ParseQWeatherCurrent(const char* json, WeatherData* data) {
     return ok;
 }
 
+void ParseQWeatherAirQuality(const char* json, WeatherData* data) {
+    cJSON* root = cJSON_Parse(json);
+    if (!root) return;
+
+    const cJSON* indexes = cJSON_GetObjectItemCaseSensitive(root, "indexes");
+    const cJSON* selected = nullptr;
+    const int count = cJSON_GetArraySize(indexes);
+    for (int i = 0; i < count; ++i) {
+        const cJSON* item = cJSON_GetArrayItem(indexes, i);
+        const cJSON* code = cJSON_GetObjectItemCaseSensitive(item, "code");
+        if (cJSON_IsString(code) && strcmp(code->valuestring, "cn-mee") == 0) {
+            selected = item;
+            break;
+        }
+        if (!selected && cJSON_IsObject(item)) selected = item;
+    }
+
+    if (selected) {
+        const cJSON* aqi = cJSON_GetObjectItemCaseSensitive(selected, "aqi");
+        const cJSON* category = cJSON_GetObjectItemCaseSensitive(selected, "category");
+        if (cJSON_IsNumber(aqi)) data->air_aqi = static_cast<int32_t>(aqi->valuedouble + 0.5);
+        const cJSON* display = cJSON_GetObjectItemCaseSensitive(selected, "aqiDisplay");
+        if (cJSON_IsString(display) && display->valuestring && display->valuestring[0]) {
+            data->air_aqi = atoi(display->valuestring);
+        }
+        if (cJSON_IsString(category) && category->valuestring) data->air_quality = category->valuestring;
+    }
+    cJSON_Delete(root);
+}
+
 bool ParseQWeatherDaily(const char* json, WeatherData* data) {
     cJSON* root = cJSON_Parse(json);
     if (!root) return false;
@@ -379,6 +409,15 @@ bool DoFetch() {
         if (!HttpGet(url, qweather_credential) ||
             !ParseQWeatherDaily(s_response_buf, &data)) {
             ESP_LOGW(kTag, "Could not load QWeather daily forecast");
+        }
+        snprintf(url, sizeof(url), "https://%s/airquality/v1/current/%.2f/%.2f?lang=zh",
+                 qweather_host, latitude, longitude);
+        if (HttpGet(url, qweather_credential)) {
+            ParseQWeatherAirQuality(s_response_buf, &data);
+            ESP_LOGI(kTag, "QWeather air quality: AQI=%d, %s",
+                     data.air_aqi, data.air_quality.c_str());
+        } else {
+            ESP_LOGW(kTag, "Could not load QWeather air quality");
         }
         data.source = "QWeather · developer.qweather.com";
     } else {

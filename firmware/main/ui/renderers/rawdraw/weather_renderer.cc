@@ -151,7 +151,6 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
     if (!fb) return;
     const auto& theme = ThemeManager::Get();
     const PaintStyle bg_style = theme.Style(ThemeToken::BackgroundPrimary);
-    const PaintStyle selected_style = theme.Style(ThemeToken::Selected);
     const PaintStyle card_style = theme.Component(ComponentRole::CardDefault);
     const PaintStyle panel_style = theme.Component(ComponentRole::Panel);
     const Color text = theme.ColorFor(ThemeToken::TextPrimary);
@@ -180,92 +179,69 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
     } else {
         std::string location = city_name_.empty() ? current_data_.city : city_name_;
         if (location.empty()) location = "杭州";
-        std::string location_line = FitTextToWidth(location, title_font_, 180);
+        const std::string location_line = FitTextToWidth(location, title_font_, 220);
 
-        // Top summary: three equal-height blocks on one visual baseline.
-        // Keep these numbers together so future weather tuning is localized.
-        constexpr int kSummaryY = Style::kStatusBarHeight + 8;
-        constexpr int kSummaryH = 68;
-        Rect location_box{24, kSummaryY, 92, kSummaryH};
-        Rect temp_box{136, kSummaryY, 112, kSummaryH};
-        Rect aqi_box{276, kSummaryY, 92, kSummaryH};
+        // A simple, consistent reading order: city/source, current weather,
+        // air and comfort metrics, then the short forecast.
+        const int header_y = Style::kStatusBarHeight + 3;
+        DrawText(fb, width, 18,
+                 InkCenteredTextTopY(title_font_, location_line.c_str(), header_y + 4, 0),
+                 location_line.c_str(), title_font_, text);
+        const std::string source = current_data_.source.find("QWeather") != std::string::npos
+            ? "和风天气"
+            : (current_data_.source.empty() ? "天气数据" : "Open-Meteo · CC BY 4.0");
+        const int source_w = MeasureTextWidth(source.c_str(), font_);
+        DrawText(fb, width, width - source_w - 18,
+                 InkCenteredTextTopY(font_, source.c_str(), header_y + 7, 0),
+                 source.c_str(), font_, secondary);
 
-        DrawStyledRoundRect(fb, width, height, location_box, Style::kBorderRadiusMD, selected_style);
-        const int pin_cx = location_box.x + location_box.w / 2;
-        const int pin_cy = location_box.y + 17;
-        DrawCircleBorder(fb, width, {pin_cx, pin_cy}, 5, 1, selected_style.fg);
-        DrawLine(fb, width, {pin_cx, pin_cy + 5}, {pin_cx - 4, pin_cy + 13}, selected_style.fg);
-        DrawLine(fb, width, {pin_cx, pin_cy + 5}, {pin_cx + 4, pin_cy + 13}, selected_style.fg);
-        const int loc_w = MeasureTextWidth(location_line.c_str(), title_font_);
-        DrawText(fb, width, location_box.x + (location_box.w - loc_w) / 2,
-                 InkCenteredTextTopYInBox(title_font_, location_line.c_str(), location_box.y + 30, 28, 0),
-                 location_line.c_str(), title_font_, selected_style.fg);
-
-        DrawStyledRoundRect(fb, width, height, temp_box, Style::kBorderRadiusMD, card_style);
+        Rect hero{16, 57, width - 32, 84};
+        DrawStyledRoundRect(fb, width, height, hero, Style::kBorderRadiusLG, card_style);
         char temp_buf[20];
-        snprintf(temp_buf, sizeof(temp_buf), "%s°C", current_data_.temp.empty() ? "--" : current_data_.temp.c_str());
-        const int temp_w = MeasureTextWidth(temp_buf, title_font_);
-        const int temp_x = temp_box.x + (temp_box.w - temp_w) / 2;
-        const int temp_y = InkCenteredTextTopY(title_font_, temp_buf, temp_box.y + 24, 0);
-        DrawText(fb, width, temp_x, temp_y, temp_buf, title_font_, text);
-        DrawHLine(fb, width, temp_y + title_font_->line_height, temp_x, temp_x + temp_w, accent);
-
-        char feels_buf[28];
-        snprintf(feels_buf, sizeof(feels_buf), "体感 %s°C",
+        snprintf(temp_buf, sizeof(temp_buf), "%s°", current_data_.temp.empty() ? "--" : current_data_.temp.c_str());
+        DrawText(fb, width, 34,
+                 InkCenteredTextTopY(title_font_, temp_buf, hero.y + 13, 0),
+                 temp_buf, title_font_, text);
+        char feels_buf[32];
+        snprintf(feels_buf, sizeof(feels_buf), "体感 %s°",
                  current_data_.feels_like.empty() ? (current_data_.temp.empty() ? "--" : current_data_.temp.c_str()) : current_data_.feels_like.c_str());
-        const int feels_w = MeasureTextWidth(feels_buf, font_);
-        DrawText(fb, width, temp_box.x + (temp_box.w - feels_w) / 2,
-                 InkCenteredTextTopY(font_, feels_buf, temp_box.y + 52, 0),
+        DrawText(fb, width, 36,
+                 InkCenteredTextTopY(font_, feels_buf, hero.y + 55, 0),
                  feels_buf, font_, secondary);
 
-        DrawStyledRoundRect(fb, width, height, aqi_box, Style::kBorderRadiusMD, card_style);
-        DrawText(fb, width, aqi_box.x + 16,
-                 InkCenteredTextTopY(font_, "空气质量", aqi_box.y + 17, 0),
-                 "空气质量", font_, secondary);
-        char aqi_buf[40];
-        snprintf(aqi_buf, sizeof(aqi_buf), "%s", current_data_.air_aqi >= 0
-                     ? std::to_string(current_data_.air_aqi).c_str() : "--");
-        const int aqi_w = MeasureTextWidth(aqi_buf, title_font_);
-        DrawText(fb, width, aqi_box.x + (aqi_box.w - aqi_w) / 2,
-                 InkCenteredTextTopY(title_font_, aqi_buf, aqi_box.y + 42, 0),
-                 aqi_buf, title_font_, text);
-        std::string air = current_data_.air_quality.empty() ? "--" : current_data_.air_quality;
-        const int air_w = MeasureTextWidth(air.c_str(), font_);
-        DrawText(fb, width, aqi_box.x + (aqi_box.w - air_w) / 2,
-                 InkCenteredTextTopY(font_, air.c_str(), aqi_box.y + 58, 0),
-                 air.c_str(), font_, secondary);
-
-        // Weather condition stack: icon above text, avoiding the old cramped
-        // horizontal icon+label composition.
-        std::string desc_line = FitTextToWidth(current_data_.weather_text.empty() ? "天气 --" : current_data_.weather_text,
-                                               font_, 80);
         const char* desc_glyph = IconGlyphForCode(current_data_.weather_icon, current_data_.weather_text);
-        const int condition_center_x = 70;
-        const int desc_icon_w = MeasureTextWidth(desc_glyph, &weather_icons_16);
-        DrawIcon(fb, width, condition_center_x - desc_icon_w / 2,
-                 InkCenteredTextTopY(&weather_icons_16, desc_glyph, kSummaryY + kSummaryH + 16, 0),
-                 desc_glyph, &weather_icons_16, accent);
-        const int desc_w = MeasureTextWidth(desc_line.c_str(), font_);
-        DrawText(fb, width, condition_center_x - desc_w / 2,
-                 InkCenteredTextTopY(font_, desc_line.c_str(), kSummaryY + kSummaryH + 35, 0),
-                 desc_line.c_str(), font_, text);
+        const int icon_w = MeasureTextWidth(desc_glyph, &weather_icons_48);
+        DrawIcon(fb, width, 258 - icon_w / 2,
+                 InkCenteredTextTopY(&weather_icons_48, desc_glyph, hero.y + 8, 0),
+                 desc_glyph, &weather_icons_48, accent);
+        const std::string desc = FitTextToWidth(current_data_.weather_text.empty() ? "天气 --" : current_data_.weather_text,
+                                                title_font_, 150);
+        const int desc_w = MeasureTextWidth(desc.c_str(), title_font_);
+        DrawText(fb, width, 258 - desc_w / 2,
+                 InkCenteredTextTopY(title_font_, desc.c_str(), hero.y + 57, 0),
+                 desc.c_str(), title_font_, text);
 
-        const int metrics_y = 156;
-        const char* labels[] = {"湿度", "风向", "风力", "紫外线"};
+        Rect metrics{16, 150, width - 32, 48};
+        DrawStyledRoundRect(fb, width, height, metrics, Style::kBorderRadiusMD, panel_style);
+        const int cell_w = metrics.w / 3;
+        const char* labels[] = {"空气质量", "湿度", "风力 / 风向"};
         std::string values[] = {
+            current_data_.air_aqi >= 0
+                ? std::to_string(current_data_.air_aqi) + " " + (current_data_.air_quality.empty() ? "" : current_data_.air_quality)
+                : (current_data_.air_quality.empty() ? "暂无数据" : current_data_.air_quality),
             current_data_.humidity.empty() ? "--%" : current_data_.humidity + "%",
-            current_data_.wind_dir.empty() ? "--" : current_data_.wind_dir,
-            current_data_.wind_scale.empty() ? "--级" : current_data_.wind_scale + "级",
-            "弱",
+            (current_data_.wind_scale.empty() ? "--" : current_data_.wind_scale + "级") +
+                (current_data_.wind_dir.empty() ? "" : " " + current_data_.wind_dir),
         };
-        const int metric_x[] = {42, 128, 224, 318};
-        for (int i = 0; i < 4; ++i) {
-            DrawText(fb, width, metric_x[i],
-                     InkCenteredTextTopY(font_, labels[i], metrics_y + 8, 0),
-                     labels[i], font_, secondary);
-            DrawText(fb, width, metric_x[i],
-                     InkCenteredTextTopY(font_, values[i].c_str(), metrics_y + 32, 0),
-                     values[i].c_str(), font_, text);
+        for (int i = 0; i < 3; ++i) {
+            const int x = metrics.x + i * cell_w;
+            if (i > 0) DrawVLine(fb, width, x, metrics.y + 8, metrics.y + metrics.h - 8, border);
+            const int label_w = MeasureTextWidth(labels[i], font_);
+            const int value_w = MeasureTextWidth(values[i].c_str(), font_);
+            DrawText(fb, width, x + (cell_w - label_w) / 2,
+                     InkCenteredTextTopY(font_, labels[i], metrics.y + 7, 0), labels[i], font_, secondary);
+            DrawText(fb, width, x + (cell_w - value_w) / 2,
+                     InkCenteredTextTopY(font_, values[i].c_str(), metrics.y + 28, 0), values[i].c_str(), font_, text);
         }
 
         const std::vector<ForecastRenderItem> forecast_items = BuildForecastItems(current_data_);
@@ -274,7 +250,7 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
             page_index_ = forecast_count - 1;
         }
 
-        Rect forecast_panel{28, 214, width - 56, 62};
+        Rect forecast_panel{16, 210, width - 32, 66};
         DrawStyledRoundRect(fb, width, height, forecast_panel, Style::kBorderRadiusMD, panel_style);
         const int card_w = forecast_panel.w / 4;
         for (int i = 0; i < forecast_count && i < 4; ++i) {
@@ -285,33 +261,23 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
                     set_pixel(fb, width, x, y, border);
                 }
             }
-            DrawText(fb, width, x + 28,
+            const int label_w = MeasureTextWidth(item.label.c_str(), font_);
+            DrawText(fb, width, x + (card_w - label_w) / 2,
                      InkCenteredTextTopY(font_, item.label.c_str(), forecast_panel.y + 12, 0),
                      item.label.c_str(), font_, secondary);
             const char* glyph = IconGlyphForCode(item.icon_code, item.weather_text);
             const int icon_center_y = forecast_panel.y + 30;
-            DrawIcon(fb, width, x + 34, InkCenteredTextTopY(&weather_icons_16, glyph, icon_center_y, 0),
+            const int forecast_icon_w = MeasureTextWidth(glyph, &weather_icons_16);
+            DrawIcon(fb, width, x + (card_w - forecast_icon_w) / 2, InkCenteredTextTopY(&weather_icons_16, glyph, icon_center_y, 0),
                      glyph, &weather_icons_16, accent);
             char temp_range[24];
             snprintf(temp_range, sizeof(temp_range), "%d/%d°C", static_cast<int>(item.temp_min), static_cast<int>(item.temp_max));
-            DrawText(fb, width, x + 20,
+            const int range_w = MeasureTextWidth(temp_range, font_);
+            DrawText(fb, width, x + (card_w - range_w) / 2,
                      InkCenteredTextTopY(font_, temp_range, forecast_panel.y + 48, 0),
                      temp_range, font_, text);
         }
     }
-
-    std::string source = current_data_.source;
-    if (source.empty()) {
-        char provider[16] = {};
-        weather_api_get_provider(provider, sizeof(provider), nullptr, 0, nullptr);
-        source = strcmp(provider, "qweather") == 0
-            ? "QWeather"
-            : "Open-Meteo.com · CC BY 4.0";
-    }
-    const std::string attribution = "数据：" + source;
-    const int attribution_width = MeasureTextWidth(attribution.c_str(), font_);
-    DrawText(fb, width, std::max(4, width - attribution_width - 8),
-             height - font_->line_height - 2, attribution.c_str(), font_, secondary);
 
     needs_full_refresh_ = false;
 }
