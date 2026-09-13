@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -68,7 +69,7 @@ const char* IconGlyphForCode(const std::string& icon_code, const std::string& we
     };
 
     if (starts_with_digit(icon_code, 100, 100) || weather_text.find("晴") != std::string::npos) {
-        return "\xef\x83\x9e";  // sun
+        return "\xef\x86\x85";  // Font Awesome sun (U+F185)
     }
     if (starts_with_digit(icon_code, 101, 103) || weather_text.find("多云") != std::string::npos ||
         weather_text.find("晴间多云") != std::string::npos) {
@@ -85,9 +86,9 @@ const char* IconGlyphForCode(const std::string& icon_code, const std::string& we
     }
     if (starts_with_digit(icon_code, 500, 599) || weather_text.find("雾") != std::string::npos ||
         weather_text.find("霾") != std::string::npos) {
-        return "\xef\x9d\x9f";  // smog/fog
+        return "\xef\x83\x82";  // cloud fallback; the compact weather font has no fog glyph
     }
-    return "\xef\x83\x9e";      // default sun
+    return "\xef\x86\x85";      // default sun (U+F185)
 }
 
 [[maybe_unused]] void DrawForecastCard(uint8_t* fb,

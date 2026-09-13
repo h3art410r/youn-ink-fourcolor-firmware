@@ -10,6 +10,7 @@
 #include <cstring>
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 
 namespace rawdraw {
 
