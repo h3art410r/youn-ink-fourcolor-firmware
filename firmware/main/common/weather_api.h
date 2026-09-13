@@ -45,6 +45,7 @@ struct WeatherData {
     std::string update_time;  // Last update time
     std::string air_quality;  // Air-quality label, empty when unavailable
     int32_t air_aqi = -1;     // AQI number
+    std::string dress_advice; // Dressing advice from life indices, empty when unavailable
     int32_t temp_int;         // Numeric temperature for icon selection
     std::vector<WeatherForecastDay> forecast;
 };

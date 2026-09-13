@@ -24,6 +24,8 @@ add_executable(weather_renderer_preview
     "${FW}/rawdraw/layout_utils.cc"
     "${FW}/rawdraw/theme.cc"
     "${FONTS}/SourceHanSansSC_Regular_slim.c"
+    "${FONTS}/SourceHanSansSC_12.c"
+    "${FONTS}/TempDigits72.c"
     "${FONTS}/SourceHanSansSC_Medium_slim.c"
     "${FONTS}/font_zectrix_16_1.c"
     "${FONTS}/weather_icons/weather_icons_16.c"

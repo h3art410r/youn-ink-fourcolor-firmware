@@ -302,6 +302,34 @@ void ParseQWeatherAirQuality(const char* json, WeatherData* data) {
     cJSON_Delete(root);
 }
 
+void ParseQWeatherIndices(const char* json, WeatherData* data) {
+    cJSON* root = cJSON_Parse(json);
+    if (!root) return;
+    const cJSON* daily = cJSON_GetObjectItemCaseSensitive(root, "daily");
+    const int count = cJSON_GetArraySize(daily);
+    for (int i = 0; i < count; ++i) {
+        const cJSON* item = cJSON_GetArrayItem(daily, i);
+        const cJSON* type = cJSON_GetObjectItemCaseSensitive(item, "type");
+        const cJSON* name = cJSON_GetObjectItemCaseSensitive(item, "name");
+        const bool is_dress =
+            (cJSON_IsString(type) &&
+             (strcmp(type->valuestring, "drsg") == 0 || strcmp(type->valuestring, "3") == 0)) ||
+            (cJSON_IsString(name) && strstr(name->valuestring, "穿衣") != nullptr);
+        if (!is_dress) continue;
+        const cJSON* text = cJSON_GetObjectItemCaseSensitive(item, "text");
+        if (cJSON_IsString(text) && text->valuestring && text->valuestring[0]) {
+            data->dress_advice = text->valuestring;
+        } else {
+            const cJSON* category = cJSON_GetObjectItemCaseSensitive(item, "category");
+            if (cJSON_IsString(category) && category->valuestring && category->valuestring[0]) {
+                data->dress_advice = category->valuestring;
+            }
+        }
+        break;
+    }
+    cJSON_Delete(root);
+}
+
 bool ParseQWeatherDaily(const char* json, WeatherData* data) {
     cJSON* root = cJSON_Parse(json);
     if (!root) return false;
@@ -418,6 +446,14 @@ bool DoFetch() {
                      data.air_aqi, data.air_quality.c_str());
         } else {
             ESP_LOGW(kTag, "Could not load QWeather air quality");
+        }
+        snprintf(url, sizeof(url), "https://%s/v7/indices/1d?type=3&location=%.2f,%.2f&lang=zh",
+                 qweather_host, longitude, latitude);
+        if (HttpGet(url, qweather_credential)) {
+            ParseQWeatherIndices(s_response_buf, &data);
+            ESP_LOGI(kTag, "QWeather dress advice: %s", data.dress_advice.c_str());
+        } else {
+            ESP_LOGW(kTag, "Could not load QWeather indices");
         }
         data.source = "QWeather · developer.qweather.com";
     } else {

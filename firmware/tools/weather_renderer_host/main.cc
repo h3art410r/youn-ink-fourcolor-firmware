@@ -56,6 +56,7 @@ int main(int argc, char** argv) {
     sample.humidity = "65";
     sample.air_quality = "优";
     sample.air_aqi = 33;
+    sample.dress_advice = "天气较冷，建议着厚外套、厚牛仔服、厚毛衣、皮衣等保暖服装。年老体弱者宜着大衣呢。";
     sample.forecast = {
         {"今天", "晴", "100", 18, 24},
         {"周一", "多云", "101", 19, 25},
