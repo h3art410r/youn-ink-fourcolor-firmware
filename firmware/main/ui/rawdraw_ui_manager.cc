@@ -1077,10 +1077,15 @@ void RawDrawUiManager::DrawStatusBar(uint8_t* fb, int width, int height) {
         : status_bar_data_.page_title.c_str();
     const int right_safe = std::max(left_safe + 40, right_x - 2);
     const char* title_icon = nullptr;
-    for (const auto& item : GetQuickSwitchItems()) {
-        if (item.page == current_page_) {
-            title_icon = item.icon;
-            break;
+    // The weather page title previously reused the Wi-Fi glyph as its page
+    // icon, duplicating the actual signal bars at the left of the status bar.
+    // Keep the signal indicator in one place and render the weather title plain.
+    if (current_page_ != RawDrawPageId::Weather) {
+        for (const auto& item : GetQuickSwitchItems()) {
+            if (item.page == current_page_) {
+                title_icon = item.icon;
+                break;
+            }
         }
     }
     const int title_icon_gap = (title_icon && title_icon[0] != '\0') ? 5 : 0;

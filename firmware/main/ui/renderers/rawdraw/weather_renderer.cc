@@ -331,7 +331,8 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
             page_index_ = forecast_count - 1;
         }
 
-        // Four borderless forecast columns: weekday, icon, high and low temps,
+        // Four borderless forecast columns: weekday, icon, and a horizontal
+        // low-to-high temperature range,
         // separated by dashed vertical hairlines.
         const int col_w = (width - 32) / 4;
         for (int i = 0; i < forecast_count && i < 4; ++i) {
@@ -350,14 +351,12 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
             DrawIcon(fb, width, cx - forecast_icon_w / 2,
                      InkCenteredTextTopY(&weather_icons_16, glyph, 232, 0),
                      glyph, &weather_icons_16, RED);
-            char hi_buf[12];
-            char lo_buf[12];
-            snprintf(hi_buf, sizeof(hi_buf), "%d°", static_cast<int>(item.temp_max));
-            snprintf(lo_buf, sizeof(lo_buf), "%d°", static_cast<int>(item.temp_min));
-            DrawCenteredTextInBox(fb, width, {col_x + 2, 248, col_w - 4, 16},
-                                  hi_buf, font_, text);
-            DrawCenteredTextInBox(fb, width, {col_x + 2, 266, col_w - 4, 16},
-                                  lo_buf, font_, secondary);
+            char range_buf[24];
+            snprintf(range_buf, sizeof(range_buf), "%d°~%d°",
+                     static_cast<int>(item.temp_min), static_cast<int>(item.temp_max));
+            const std::string range = FitTextToWidth(range_buf, small_font, col_w - 6);
+            DrawCenteredTextInBox(fb, width, {col_x + 3, 254, col_w - 6, 18},
+                                  range, small_font, text);
         }
 
     }
