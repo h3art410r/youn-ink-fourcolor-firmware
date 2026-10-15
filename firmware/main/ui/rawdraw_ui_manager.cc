@@ -1096,11 +1096,14 @@ void RawDrawUiManager::DrawStatusBar(uint8_t* fb, int width, int height) {
     std::string display_title = FitTextToWidth(title, title_font, text_max_w);
     int title_text_w = MeasureTextWidth(display_title.c_str(), title_font);
     int title_w = title_icon_w + title_icon_gap + title_text_w;
+    const int title_right_safe = current_page_ == RawDrawPageId::Weather
+        ? std::min(width - padding, right_safe + 4)
+        : right_safe;
     int title_x = current_page_ == RawDrawPageId::Weather
-        ? right_safe - title_w
+        ? title_right_safe - title_w
         : (width - title_w) / 2;
     if (title_x < left_safe) title_x = left_safe;
-    if (title_x + title_w > right_safe) title_x = std::max(left_safe, right_safe - title_w);
+    if (title_x + title_w > title_right_safe) title_x = std::max(left_safe, title_right_safe - title_w);
     const int title_y = rawdraw::InkCenteredTextTopYInBox(title_font, display_title.c_str(),
                                                          0, bar_height, 0);
     static std::string s_last_logged_title_layout;

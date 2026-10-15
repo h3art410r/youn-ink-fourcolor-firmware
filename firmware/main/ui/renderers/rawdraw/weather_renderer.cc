@@ -68,30 +68,38 @@ void DrawTemperatureRange(uint8_t* fb, int width, const Rect& box, int low, int 
                           Color color) {
     char low_buf[12];
     char high_buf[12];
-    snprintf(low_buf, sizeof(low_buf), "%d°", low);
-    snprintf(high_buf, sizeof(high_buf), "%d°", high);
+    snprintf(low_buf, sizeof(low_buf), "%d", low);
+    snprintf(high_buf, sizeof(high_buf), "%d", high);
 
     const int separator_width = 6;
-    const int gap = 4;
+    const int degree_size = 5;
+    const int degree_gap = 2;
+    const int gap = 5;
     const lv_font_t* font = preferred_font;
     int low_width = MeasureTextWidth(low_buf, font);
     int high_width = MeasureTextWidth(high_buf, font);
-    if (low_width + high_width + separator_width + gap * 2 > box.w) {
+    if (low_width + high_width + degree_size * 2 + degree_gap * 2 + separator_width + gap * 2 > box.w) {
         font = compact_font;
         low_width = MeasureTextWidth(low_buf, font);
         high_width = MeasureTextWidth(high_buf, font);
     }
 
-    const int total_width = low_width + high_width + separator_width + gap * 2;
+    const int group_width = low_width + degree_gap + degree_size;
+    const int total_width = group_width * 2 + separator_width + gap * 2;
     int x = box.x + std::max(0, (box.w - total_width) / 2);
     const int low_y = InkCenteredTextTopYInBox(font, low_buf, box.y, box.h, 0);
     DrawText(fb, width, x, low_y, low_buf, font, color);
-    x += low_width + gap;
+    const int degree_y = box.y + std::max(2, (box.h - degree_size) / 2 - 2);
+    DrawCircleBorder(fb, width, {x + low_width + degree_gap + degree_size / 2, degree_y + degree_size / 2},
+                     degree_size / 2, 1, color);
+    x += group_width + gap;
     const int separator_y = box.y + box.h / 2;
     DrawHLine(fb, width, separator_y, x, x + separator_width - 1, color);
     x += separator_width + gap;
     const int high_y = InkCenteredTextTopYInBox(font, high_buf, box.y, box.h, 0);
     DrawText(fb, width, x, high_y, high_buf, font, color);
+    DrawCircleBorder(fb, width, {x + high_width + degree_gap + degree_size / 2, degree_y + degree_size / 2},
+                     degree_size / 2, 1, color);
 }
 
 const char* IconGlyphForCode(const std::string& icon_code, const std::string& weather_text) {
