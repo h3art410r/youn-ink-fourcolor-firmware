@@ -63,6 +63,37 @@ void DrawCenteredTextInBox(uint8_t* fb, int width, const Rect& box,
     DrawText(fb, width, x, y, text.c_str(), font, color);
 }
 
+void DrawTemperatureRange(uint8_t* fb, int width, const Rect& box, int low, int high,
+                          const lv_font_t* preferred_font, const lv_font_t* compact_font,
+                          Color color) {
+    char low_buf[12];
+    char high_buf[12];
+    snprintf(low_buf, sizeof(low_buf), "%d°", low);
+    snprintf(high_buf, sizeof(high_buf), "%d°", high);
+
+    const int separator_width = 6;
+    const int gap = 4;
+    const lv_font_t* font = preferred_font;
+    int low_width = MeasureTextWidth(low_buf, font);
+    int high_width = MeasureTextWidth(high_buf, font);
+    if (low_width + high_width + separator_width + gap * 2 > box.w) {
+        font = compact_font;
+        low_width = MeasureTextWidth(low_buf, font);
+        high_width = MeasureTextWidth(high_buf, font);
+    }
+
+    const int total_width = low_width + high_width + separator_width + gap * 2;
+    int x = box.x + std::max(0, (box.w - total_width) / 2);
+    const int low_y = InkCenteredTextTopYInBox(font, low_buf, box.y, box.h, 0);
+    DrawText(fb, width, x, low_y, low_buf, font, color);
+    x += low_width + gap;
+    const int separator_y = box.y + box.h / 2;
+    DrawHLine(fb, width, separator_y, x, x + separator_width - 1, color);
+    x += separator_width + gap;
+    const int high_y = InkCenteredTextTopYInBox(font, high_buf, box.y, box.h, 0);
+    DrawText(fb, width, x, high_y, high_buf, font, color);
+}
+
 const char* IconGlyphForCode(const std::string& icon_code, const std::string& weather_text) {
     auto starts_with_digit = [](const std::string& value, int low, int high) -> bool {
         if (value.empty()) return false;
@@ -119,12 +150,9 @@ const char* IconGlyphForCode(const std::string& icon_code, const std::string& we
     int icon_w = MeasureTextWidth(glyph, icon_font);
     DrawIcon(fb, width, icon_cx - icon_w / 2, icon_cy - 8, glyph, icon_font, RED);
 
-    char temp_buf[24];
-    snprintf(temp_buf, sizeof(temp_buf), "%d~%d°", static_cast<int>(day.temp_min), static_cast<int>(day.temp_max));
-    int temp_w = MeasureTextWidth(temp_buf, font);
-    const int temp_baseline = CalcBaselineY(font, r.y + r.h - 12, Style::kVisualTextOffset);
-    DrawText(fb, width, r.x + (r.w - temp_w) / 2, TopYFromBaseline(font, temp_baseline),
-             temp_buf, font, BLACK);
+    DrawTemperatureRange(fb, width, {r.x + 5, r.y + r.h - 26, r.w - 10, 20},
+                         static_cast<int>(day.temp_min), static_cast<int>(day.temp_max),
+                         font, font, BLACK);
 }
 
 std::vector<ForecastRenderItem> BuildForecastItems(const WeatherData& data) {
@@ -345,13 +373,9 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
             DrawIcon(fb, width, cx - forecast_icon_w / 2,
                      InkCenteredTextTopY(&weather_icons_16, glyph, 232, 0),
                      glyph, &weather_icons_16, RED);
-            char range_buf[24];
-            snprintf(range_buf, sizeof(range_buf), "%d°~%d°",
-                     static_cast<int>(item.temp_min), static_cast<int>(item.temp_max));
-            const lv_font_t* range_font = font_;
-            if (MeasureTextWidth(range_buf, range_font) > col_w - 8) range_font = small_font;
-            DrawCenteredTextInBox(fb, width, {col_x + 4, 254, col_w - 8, 22},
-                                  range_buf, range_font, text);
+            DrawTemperatureRange(fb, width, {col_x + 4, 254, col_w - 8, 22},
+                                 static_cast<int>(item.temp_min), static_cast<int>(item.temp_max),
+                                 font_, small_font, text);
         }
 
     }
