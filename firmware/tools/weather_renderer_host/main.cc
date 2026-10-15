@@ -92,7 +92,7 @@ void DrawPreviewStatusBar(uint8_t* fb) {
 
     const char* title = "天气 1/2";
     const int title_width = MeasureTextWidth(title, &SourceHanSansSC_Regular_slim);
-    constexpr int kRightSafe = 322;
+    constexpr int kRightSafe = 326;
     DrawText(fb, kWidth, kRightSafe - title_width,
              InkCenteredTextTopYInBox(&SourceHanSansSC_Regular_slim, title, 0, kBarHeight, 0),
              title, &SourceHanSansSC_Regular_slim, text.fg);
