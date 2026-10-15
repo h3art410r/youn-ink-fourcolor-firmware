@@ -331,20 +331,14 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
             page_index_ = forecast_count - 1;
         }
 
-        // Four borderless forecast columns: weekday, icon, and a horizontal
-        // low-to-high temperature range,
-        // separated by dashed vertical hairlines.
+        // Four borderless forecast columns share a simple three-row rhythm:
+        // weekday, weather icon, then a larger horizontal low-to-high range.
         const int col_w = (width - 32) / 4;
         for (int i = 0; i < forecast_count && i < 4; ++i) {
             const auto& item = forecast_items[i];
             const int col_x = 16 + i * col_w;
             const int cx = col_x + col_w / 2;
-            if (i > 0) {
-                for (int y = 212; y <= 276; y += 4) {
-                    set_pixel(fb, width, col_x, y, border);
-                }
-            }
-            DrawCenteredTextInBox(fb, width, {col_x + 2, 206, col_w - 4, 16},
+            DrawCenteredTextInBox(fb, width, {col_x + 2, 205, col_w - 4, 18},
                                   item.label, font_, secondary);
             const char* glyph = IconGlyphForCode(item.icon_code, item.weather_text);
             const int forecast_icon_w = MeasureTextWidth(glyph, &weather_icons_16);
@@ -354,9 +348,10 @@ void WeatherRenderer::Render(uint8_t* fb, int width, int height) {
             char range_buf[24];
             snprintf(range_buf, sizeof(range_buf), "%d°~%d°",
                      static_cast<int>(item.temp_min), static_cast<int>(item.temp_max));
-            const std::string range = FitTextToWidth(range_buf, small_font, col_w - 6);
-            DrawCenteredTextInBox(fb, width, {col_x + 3, 254, col_w - 6, 18},
-                                  range, small_font, text);
+            const lv_font_t* range_font = font_;
+            if (MeasureTextWidth(range_buf, range_font) > col_w - 8) range_font = small_font;
+            DrawCenteredTextInBox(fb, width, {col_x + 4, 254, col_w - 8, 22},
+                                  range_buf, range_font, text);
         }
 
     }
